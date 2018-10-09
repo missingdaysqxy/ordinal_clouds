@@ -1,0 +1,76 @@
+D:\Anaconda3\python.exe D:/qxliu/ordinal_clouds/codes/resnet.py
+D:\Anaconda3\lib\site-packages\h5py\__init__.py:36: FutureWarning: Conversion of the second argument of issubdtype from `float` to `np.floating` is deprecated. In future, it will be treated as `np.float64 == np.dtype(float).type`.
+  from ._conv import register_converters as _register_converters
+ [*] 41804 images initialized as training data
+2018-10-09 04:02:31.345143: I c:\users\user\source\repos\tensorflow\tensorflow\core\platform\cpu_feature_guard.cc:141] Your CPU supports instructions that this TensorFlow binary was not compiled to use: AVX AVX2
+2018-10-09 04:02:32.414450: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1392] Found device 0 with properties:
+name: TITAN V major: 7 minor: 0 memoryClockRate(GHz): 1.455
+pciBusID: 0000:05:00.0
+totalMemory: 12.00GiB freeMemory: 9.67GiB
+2018-10-09 04:02:33.080813: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1392] Found device 1 with properties:
+name: TITAN V major: 7 minor: 0 memoryClockRate(GHz): 1.455
+pciBusID: 0000:06:00.0
+totalMemory: 12.00GiB freeMemory: 9.67GiB
+2018-10-09 04:02:33.737899: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1392] Found device 2 with properties:
+name: TITAN V major: 7 minor: 0 memoryClockRate(GHz): 1.455
+pciBusID: 0000:09:00.0
+totalMemory: 12.00GiB freeMemory: 9.67GiB
+2018-10-09 04:02:33.738857: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1471] Adding visible gpu devices: 0, 1, 2
+2018-10-09 04:02:38.571212: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:952] Device interconnect StreamExecutor with strength 1 edge matrix:
+2018-10-09 04:02:38.571613: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:958]      0 1 2
+2018-10-09 04:02:38.571896: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:971] 0:   N N N
+2018-10-09 04:02:38.572192: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:971] 1:   N N N
+2018-10-09 04:02:38.572492: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:971] 2:   N N N
+2018-10-09 04:02:38.573165: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1084] Created TensorFlow device (/job:localhost/replica:0/task:0/device:GPU:0 with 9347 MB memory) -> physical GPU (device: 0, name: TITAN V, pci bus id: 0000:05:00.0, compute capability: 7.0)
+2018-10-09 04:02:38.575975: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1084] Created TensorFlow device (/job:localhost/replica:0/task:0/device:GPU:1 with 9347 MB memory) -> physical GPU (device: 1, name: TITAN V, pci bus id: 0000:06:00.0, compute capability: 7.0)
+2018-10-09 04:02:38.578325: I c:\users\user\source\repos\tensorflow\tensorflow\core\common_runtime\gpu\gpu_device.cc:1084] Created TensorFlow device (/job:localhost/replica:0/task:0/device:GPU:2 with 9347 MB memory) -> physical GPU (device: 2, name: TITAN V, pci bus id: 0000:09:00.0, compute capability: 7.0)
+[*]predict:[4 4 4 4 4 1 4 4 4 4 4 4 1 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 1 4 4 4 4 4 4 4
+ 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4]
+[*]labels:[4 2 2 2 2 2 1 2 3 3 3 2 2 2 3 2 2 1 3 1 4 2 2 3 2 0 3 2 2 2 2 3 5 5 4 4 4
+ 4 4 3 0 0 0 0 0 0 0 0 4 4 2 3 3 2 2 2 4 3 4 4 4 4 4 4]
+elapsed time:0:00:17.190044 remaining time:1 day, 23:44:43.249956 iteration:0 loss:6.596353530883789
+[*]predict:[4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4
+ 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4]
+[*]labels:[3 3 4 3 3 2 4 3 2 4 3 3 3 3 5 5 1 2 1 1 1 1 1 1 3 1 3 1 1 1 3 1 4 4 3 4 2
+ 4 5 5 0 0 0 0 0 0 0 0 2 2 2 1 3 2 2 2 2 4 2 2 4 2 4 3]
+elapsed time:0:00:56.806366 remaining time:1:32:47.583661 iteration:100 loss:5.64966344833374
+[*]predict:[2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 4 4 2 2 2 2 2 2 2 2 2 2 2
+ 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2]
+[*]labels:[1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 4 4 4 4 4 4 4 4 3 2 3 2 3 4 4 4 4 4 4 3 4
+ 3 4 4 4 4 4 4 4 4 4 4 2 4 3 3 3 3 4 3 4 4 4 4 4 4 4 4]
+elapsed time:0:01:36.236618 remaining time:1:18:11.653411 iteration:200 loss:6.324117660522461
+[*]predict:[4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4
+ 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4]
+[*]labels:[3 4 4 4 4 4 4 4 2 2 1 1 0 1 1 1 4 4 4 4 4 4 4 4 2 2 5 5 5 5 5 5 2 3 1 3 2
+ 3 3 3 2 2 2 4 3 3 3 3 0 0 0 0 0 0 0 0 3 3 2 3 1 2 2 3]
+elapsed time:0:02:15.552900 remaining time:1:12:47.867058 iteration:300 loss:6.249741554260254
+[*]predict:[4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4
+ 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4]
+[*]labels:[4 4 4 4 4 4 4 4 2 4 1 4 2 4 4 3 3 3 2 3 3 3 2 2 4 4 3 3 4 3 4 4 4 4 4 4 4
+ 4 4 3 4 4 4 4 4 4 4 4 4 4 4 4 3 4 3 4 3 2 2 3 3 4 4 4]
+elapsed time:0:02:54.970176 remaining time:1:09:48.379665 iteration:400 loss:5.781464576721191
+[*]predict:[2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2
+ 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2]
+[*]labels:[4 4 4 4 3 3 3 2 4 4 5 5 5 5 5 5 5 5 1 1 1 1 1 2 3 3 3 3 3 3 4 3 5 5 5 5 5
+ 5 4 3 5 5 1 1 1 1 1 2 3 1 3 2 3 3 3 3 2 4 3 4 4 4 4 4]
+elapsed time:0:03:34.284397 remaining time:1:07:42.845787 iteration:500 loss:6.401939392089844
+[*]predict:[4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 2 4
+ 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4]
+[*]labels:[4 2 4 2 4 1 4 2 4 4 4 4 4 4 4 4 4 4 3 4 4 4 4 4 2 3 2 3 2 3 2 3 2 2 2 2 2
+ 3 2 3 2 3 2 3 2 2 1 2 2 1 2 1 1 1 1 2 0 0 0 0 0 0 0 0]
+elapsed time:0:04:13.757687 remaining time:1:06:08.502174 iteration:600 loss:5.76332950592041
+[*]predict:[2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2
+ 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2]
+[*]labels:[1 1 2 2 3 2 3 2 1 3 1 3 3 3 3 3 3 2 3 3 3 3 3 3 1 1 1 2 1 3 2 3 1 2 5 5 5
+ 5 5 5 1 2 3 1 3 3 5 5 3 2 3 2 2 3 1 1 4 2 4 3 4 4 4 4]
+elapsed time:0:04:53.609093 remaining time:1:04:54.821057 iteration:700 loss:6.658688068389893
+[*]predict:[1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+ 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+[*]labels:[1 1 5 5 5 5 5 5 1 2 1 1 1 1 1 1 0 1 0 1 0 1 0 0 2 2 1 1 2 2 5 5 1 2 1 2 1
+ 0 2 1 5 5 5 5 5 5 2 3 2 2 2 2 1 1 2 1 3 4 4 3 4 4 4 4]
+elapsed time:0:05:33.513462 remaining time:1:03:50.196829 iteration:800 loss:6.271672248840332
+[*]predict:[2 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2
+ 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 1 2 2 2 2 2 2 2]
+[*]labels:[1 1 1 1 1 1 1 2 0 0 0 0 0 0 0 0 5 5 5 5 5 5 3 3 4 4 4 4 4 4 4 4 4 3 2 3 4
+ 3 4 4 2 2 3 1 3 1 3 3 5 5 3 3 3 3 3 3 2 4 2 3 2 2 2 3]
+elapsed time:0:06:13.605921 remaining time:1:02:52.964043 iteration:900 loss:6.322762489318848
