@@ -4,6 +4,7 @@ codes/logs/*
 codes/oldlogs/*
 codes/pretrained/*
 codes/checkpoints/*
+codes/__pycache__/
 hooks/
 objects/
 *.h5
