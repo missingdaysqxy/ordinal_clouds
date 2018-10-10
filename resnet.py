@@ -25,9 +25,9 @@ flags.DEFINE_string('model_name', 'resnet.model', 'model name')
 flags.DEFINE_string('logdir', './logs/logs_{}_{}_{}-', 'Folder path ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('optimizer', 'Adam', 'Either Adam or SGD')
 flags.DEFINE_string('losstype', 'cross_entropy', 'Either ordinal or cross_entropy')
-flags.DEFINE_integer('batch_size', 72 * 8, '')
+flags.DEFINE_integer('batch_size', 100 * 8, '')
 flags.DEFINE_integer('epoch', 4, 'Count of epoch')
-flags.DEFINE_boolean('fullytrain', False, 'Train all images in dataset')
+flags.DEFINE_boolean('fullytrain', True, 'Train all images in dataset')
 flags.DEFINE_integer('loops', 500, 'Number of iteration in training, only works when fullytrain is False')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
@@ -181,6 +181,17 @@ class Confusion(object):
 
 def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, False), logiter=100, predct=None,
           labels=None):
+    def _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val):
+        sum_str, lossval = sess.run([summaries, loss])
+        if predct != None and labels != None:
+            correct_prediction = tf.equal(predct, labels)
+            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+            predval, ys, accval = sess.run([predct, labels, accuracy])
+            cf = Confusion(predictions=predval, labels=ys)
+            print('[*]step:{}  accuracy:{}  Confusion Matrix:\n{}'.format(step_val, accval, cf))
+        writer.add_summary(sum_str, step_val)
+        return lossval
+
     time_begin = datetime.now()
     logdir = _get_log_dir(FLAGS)
     if not os.path.exists(logdir):
@@ -190,21 +201,13 @@ def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, F
         try:
             _, step_val = sess.run([optim, global_step])
             if it % logiter == 0:
-                sum_str, lossval = sess.run([summaries, loss])
-                if predct != None and labels != None:
-                    correct_prediction = tf.equal(predct, labels)
-                    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-                    predval, ys, accval = sess.run([predct, labels, accuracy])
-                    cf = Confusion(predictions=predval, labels=ys)
-                    # print('[*]accuracy:{}\n[*]predict:{}\n[*]labels:{}'.format(accval, predval, ys))
-                    print('[*]accuracy:{}  Confusion Matrix:\n{}'.format(accval, cf))
-                writer.add_summary(sum_str, step_val)
+                lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
                 time_elapse = datetime.now() - time_begin
                 time_remain = time_elapse / (it + 1) * (loop - it - 1)
                 words = 'elapsed time:{} remaining time:{} iteration:{} loss:{}'. \
                     format(time_elapse, time_remain, it, lossval)
                 print(words)
-                if lossval < 1.0:
+                if lossval < 1.6:
                     save(sess, os.path.join(_get_model_dir(FLAGS),
                                             'tmp_loss{:.3f}'.format(lossval) + FLAGS.model_name), step_val)
         except tf.errors.InvalidArgumentError as e:
@@ -212,12 +215,12 @@ def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, F
             print(e.message)
             continue
         except tf.errors.OutOfRangeError:
-            print('Epoch reach the end...')
+            lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
+            print('[*]Epoch reach the end, final loss value is {}'.format(lossval))
             break
     time_elapse = datetime.now() - time_begin
     print('Training finish, elapsed time %s...Trying to save the model...' % time_elapse)
     save(sess, os.path.join(_get_model_dir(FLAGS), FLAGS.model_name), step_val)
-
 
 def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
     cnt = 0;
