@@ -1,10 +1,10 @@
 # Data files and directories common in repo root
 datasets/*
-codes/logs/*
-codes/oldlogs/*
-codes/pretrained/*
-codes/checkpoints/*
-codes/__pycache__/
+logs/*
+oldlogs/*
+pretrained/*
+checkpoints/*
+__pycache__/
 hooks/
 objects/
 *.h5
