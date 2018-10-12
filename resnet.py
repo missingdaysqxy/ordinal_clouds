@@ -5,30 +5,33 @@ import numpy as np
 import pandas as pd
 import os, sys
 from datetime import datetime
+from time import time
 from tabulate import tabulate
+import logging
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2'  # 可以使用的GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'  # 可以使用的GPU
 gpu_net = '/gpu:1'
 gpu_opt = '/gpu:0'
-gpu_evl = '/gpu:3'
+gpu_evl = '/gpu:1'
 # TODO: output the results to file "results.csv" and compute the confusion matrix
 
 flags = tf.app.flags
 ERROR_FLAG = 0
+CLASS_COUNT = 6
 
-flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
+flags.DEFINE_integer('resnet_model', 50, 'The layers count of resnet: 50, 101 or 152')
 flags.DEFINE_string('pretrain_path', './pretrained/resnet_v1_{}.ckpt', '')
-flags.DEFINE_string('data_dir', './datasets/separate/', '')
+flags.DEFINE_string('data_dir', './datasets/mode_2004/', '')
 flags.DEFINE_string('model_dir', './checkpoints/models_{}_{}_{}-',
                     'Folder path ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('model_name', 'resnet.model', 'model name')
 flags.DEFINE_string('logdir', './logs/logs_{}_{}_{}-', 'Folder path ends with 1.unpre/pre* 2.optimizer 3.loss type')
-flags.DEFINE_string('optimizer', 'Adam', 'Either Adam or SGD')
+flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('losstype', 'cross_entropy', 'Either ordinal or cross_entropy')
-flags.DEFINE_integer('batch_size', 100 * 8, '')
-flags.DEFINE_integer('epoch', 4, 'Count of epoch')
+flags.DEFINE_integer('batch_size', 32, 'How many big images in a batch, so the small images count is 8 * batch_size')
+flags.DEFINE_integer('epoch', 1, 'Count of epoch')
 flags.DEFINE_boolean('fullytrain', True, 'Train all images in dataset')
-flags.DEFINE_integer('loops', 500, 'Number of iteration in training, only works when fullytrain is False')
+flags.DEFINE_integer('loops', 1000, 'Number of iteration in training, only works when fullytrain is False')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
 flags.DEFINE_boolean('is_training', True, 'Train or evaluate?')
@@ -104,7 +107,7 @@ def load_user_model(sess, model_dir):
         return ERROR_FLAG
 
 
-def init_reader(path=FLAGS.data_dir, batch_size=64, epoch=1, is_training=True):
+def init_reader(path, batch_size, epoch, is_training):
     '''
     get a tensorflow dataset
     :param path:
@@ -117,36 +120,38 @@ def init_reader(path=FLAGS.data_dir, batch_size=64, epoch=1, is_training=True):
     def _parse_function(xs, ys):
         x_img_str = tf.read_file(xs)
         x_img_decoded = tf.image.convert_image_dtype(tf.image.decode_jpeg(x_img_str), tf.float32)
-        x_img_resized = tf.image.resize_images(x_img_decoded, size=[32, 32],
+        x_img_resized = tf.image.resize_images(x_img_decoded, size=[128, 64],
                                                method=tf.image.ResizeMethod.BILINEAR)
-        x_img = tf.reshape(x_img_resized, [32, 32, 3])
+        x_img = tf.reshape(x_img_resized, [128, 64, 3])
         return x_img, ys
 
     # Processing the image filenames
-    fullpath = os.path.join(path, ('train' if is_training else 'validation'))
-    count = 0
-    dicts = {}
-    for dir in os.listdir(fullpath):
-        files = os.listdir(os.path.join(fullpath, dir))
-        files = [(os.path.join(fullpath, dir + '/' + f)) for f in files]
-        count_sub = len(files)
-        count += count_sub
-        label = os.path.basename(dir)
-        if label == 'nodata':
-            label = 'F'
-        t_label = ord(label) - ord('A')
-        t_labels = [t_label] * count_sub
-        dicts.update(dict(zip(files, t_labels)))
+    fs = os.listdir(path)
+    csv_name = os.path.join(path, [it for it in fs if '.csv' in it][0])
+
+    # Add one more column named "Train" to split the training set and validation set
+    frame = pd.read_csv(csv_name)
+
+    frame = frame.loc[frame['Train'] == ('T' if is_training else 'F')]
+    count = frame['num_id'].count()
     print(' [*] {} images initialized as {} data'.format(count, ('training' if is_training else 'validation')))
+
+    num_idx = frame['num_id'].values.astype(str).tolist()
+    t_names = [item + '.jpg' for item in num_idx]
+    file_names = [os.path.join(path, item) for item in t_names]
+    labels = frame['Cloud_Cover'].values.tolist()
+    t_labels = [list('F'.join(item.split('*'))) for item in labels]
+    for it in range(len(t_labels)):
+        t_labels[it] = list(map(lambda x: ord(x) - ord('A'), t_labels[it]))
     # Initialize as a tensorflow tensor object
-    xs = tf.constant(list(dicts.keys()))
-    ys = tf.constant(list(dicts.values()))
-    data = tf.data.Dataset.from_tensor_slices((xs, ys))
+    data = tf.data.Dataset.from_tensor_slices((tf.constant(file_names),
+                                               tf.constant(t_labels)))
+    # larger buffer_size increase the confusion level, but cost more time and memory
+    # however, there's evidence that larger buffer_size results in less caculating time
+    data = data.shuffle(buffer_size=batch_size * 1024)
     data = data.map(_parse_function)
     if is_training:
-        # larger buffer_size increase the confusion level, but cost more time and memory
-        # however, there's evidence that larger buffer_size results in less caculating time
-        return data.shuffle(buffer_size=count // 4).batch(batch_size).repeat(epoch), count
+        return data.batch(batch_size).repeat(epoch), count
     else:
         return data.batch(batch_size), count
 
@@ -179,7 +184,7 @@ class Confusion(object):
         return tabulate(matrix, headers=self.headers, tablefmt='grid')
 
 
-def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, False), logiter=100, predct=None,
+def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False), logiter=100, predct=None,
           labels=None):
     def _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val):
         sum_str, lossval = sess.run([summaries, loss])
@@ -188,7 +193,9 @@ def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, F
             accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
             predval, ys, accval = sess.run([predct, labels, accuracy])
             cf = Confusion(predictions=predval, labels=ys)
-            print('[*]step:{}  accuracy:{}  Confusion Matrix:\n{}'.format(step_val, accval, cf))
+            msg = '[*]step:{}  accuracy:{}  Confusion Matrix:\n{}'.format(step_val, accval, cf)
+            print(msg)
+            logging.info(msg)
         writer.add_summary(sum_str, step_val)
         return lossval
 
@@ -196,7 +203,9 @@ def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, F
     logdir = _get_log_dir(FLAGS)
     if not os.path.exists(logdir):
         os.makedirs(logdir)
-    writer = tf.summary.FileWriter(logdir, sess.graph)
+    suffix = str(int(time()))
+    writer = tf.summary.FileWriter(logdir, sess.graph, filename_suffix=suffix)
+    logging.basicConfig(filename=os.path.join(logdir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
     for it in range(loop):
         try:
             _, step_val = sess.run([optim, global_step])
@@ -204,27 +213,35 @@ def train(sess, optim, loss, summaries, loop=50000, global_step=tf.Variable(0, F
                 lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
                 time_elapse = datetime.now() - time_begin
                 time_remain = time_elapse / (it + 1) * (loop - it - 1)
-                words = 'elapsed time:{} remaining time:{} iteration:{} loss:{}'. \
-                    format(time_elapse, time_remain, it, lossval)
-                print(words)
-                if lossval < 1.6:
+                msg = 'elapsed time:{} remaining time:{} iteration:{}/{} loss:{}'. \
+                    format(time_elapse, time_remain, it, loop, lossval)
+                print(msg)
+                logging.info(msg)
+                if lossval < 2:
                     save(sess, os.path.join(_get_model_dir(FLAGS),
                                             'tmp_loss{:.3f}'.format(lossval) + FLAGS.model_name), step_val)
         except tf.errors.InvalidArgumentError as e:
             print('An error of type tf.errors.InvalidArgumentError has been ignored...')
             print(e.message)
+            logging.error('tf.errors.InvalidArgumentError:\r\n' + e.message)
             continue
         except tf.errors.OutOfRangeError:
             lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
-            print('[*]Epoch reach the end, final loss value is {}'.format(lossval))
+            msg = '[*]Epoch reach the end, final loss value is {}'.format(lossval)
+            print(msg)
+            logging.info(msg)
             break
     time_elapse = datetime.now() - time_begin
     print('Training finish, elapsed time %s...Trying to save the model...' % time_elapse)
     save(sess, os.path.join(_get_model_dir(FLAGS), FLAGS.model_name), step_val)
 
+
 def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
     cnt = 0;
     accsum = 0.0
+    suffix = int(time())
+    logpath = os.path.join(_get_log_dir(FLAGS), 'evaluate.output-{}.txt'.format(suffix))
+    logging.basicConfig(filename=logpath, level=logging.DEBUG)
     cf = Confusion(headers=['A', 'B', 'C', 'D', 'E', '*'])
     with tf.device(gpu_evl):
         prediction = tf.argmax(probabilities, axis=-1)
@@ -233,14 +250,18 @@ def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
         while cnt < loop:
             cnt += 1
             try:
-                accval, acc_up, probsval, predval, ys = sess.run([accuracy, acc_update, probabilities, prediction, labels])
+                accval, acc_up, probsval, predval, ys = sess.run(
+                    [accuracy, acc_update, probabilities, prediction, labels])
                 accsum = accsum + accval
                 cf.add_data(predval, ys)
                 if cnt % logiter == 0:
-                    print('accuracy of %d batches is %f' % (cnt, accsum / cnt))
-                    print('confusion matrix: {}'.format(cf))
+                    msg = 'iteration: {}/{}  accuracy: {}\r\nconfusion matrix:\r\n{}'.format(cnt, loop, accval, cf)
+                    print(msg)
+                    print('pre:{}\nlable:{}'.format(predval,ys))
+                    logging.info(msg)
             except tf.errors.InvalidArgumentError:
                 print('An error of type tf.errors.InvalidArgumentError has been ignored...')
+                logging.error('tf.errors.InvalidArgumentError')
                 continue
             except tf.errors.OutOfRangeError:
                 break
@@ -258,6 +279,7 @@ def init_loss(logits, labels, end_points=None, losstype='ordinal'):
                                                          tf.trainable_variables())
             loss += reg
         elif losstype == 'ordinal':
+            # ToDO: these codes below can`t get a valid loss value
             import math
             ks = [np.arange(1, 7).astype(np.float32)[None, :] \
                   for _ in range(FLAGS.batch_size)]
@@ -278,14 +300,18 @@ def init_loss(logits, labels, end_points=None, losstype='ordinal'):
             raise NotImplementedError
         return loss
 
-def main(_):
-    reader, data_count = init_reader(FLAGS.data_dir, batch_size=FLAGS.batch_size, epoch=FLAGS.epoch,
-                                     is_training=FLAGS.is_training)
-    batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
-    # param batch_xs: shape [batch_size, 32, 32, 3] type tf.float32
-    # param batch_ys: shape [batch_size] type tf.int32
 
-    num_classes = 6
+def main(_):
+    reader, data_count = init_reader(FLAGS.data_dir, FLAGS.batch_size, FLAGS.epoch, FLAGS.is_training)
+    batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
+    # param batch_xs: shape [batch_size, 128, 64, 3] type tf.float32
+    # param batch_ys: shape [batch_size] type tf.int32
+    off_hs = [0, 0, 32, 32, 64, 64, 96, 96]
+    off_ws = [0, 32, 0, 32, 0, 32, 0, 32]
+    x_img_cuts = [tf.image.crop_to_bounding_box(batch_xs, hs, ws, 32, 32) \
+                  for hs, ws in zip(off_hs, off_ws)]
+    batch_xs = tf.reshape(tf.concat(x_img_cuts, axis=0), [-1, 32, 32, 3])  # shape [batch_size * 8, 32, 32, 3]
+    batch_ys = tf.reshape(batch_ys, [-1])  # shape [batch_size * 8]
 
     config = _get_session_config()
     sess = tf.InteractiveSession(config=config)
@@ -307,9 +333,9 @@ def main(_):
     if FLAGS.is_training:
         with slim.arg_scope(resnet_v1.resnet_arg_scope()):
             with tf.device(gpu_net):
-                # param logits: shape [batch_size, 6]
-                logits, end_points = resnet(batch_xs, num_classes=num_classes, is_training=True)
-                logits = tf.reshape(logits, [-1, num_classes], name='logits_2d')
+                # param logits: shape [batch_size, CLASS_COUNT]
+                logits, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=True)
+                logits = tf.reshape(logits, [-1, CLASS_COUNT], name='logits_2d')
                 prediction = tf.argmax(logits, axis=-1, output_type=tf.int32)
             with tf.device(gpu_evl):
                 mAP = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
@@ -345,7 +371,7 @@ def main(_):
                 raise NotImplementedError
 
         # Ready to train
-        sess.run(tf.global_variables_initializer(), options=tf.RunOptions(report_tensor_allocations_upon_oom=True))
+        sess.run(tf.global_variables_initializer())
         loops = FLAGS.loops
         if FLAGS.fullytrain:
             loops = data_count * FLAGS.epoch
@@ -353,8 +379,8 @@ def main(_):
         print('Training finished')
     else:  # Evaluate
         with slim.arg_scope(resnet_v1.resnet_arg_scope()):
-            probs, end_points = resnet(batch_xs, num_classes=num_classes, is_training=False)
-            probs = tf.reshape(probs, [-1, num_classes], name='probability')
+            probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=False)
+            probs = tf.reshape(probs, [-1, CLASS_COUNT], name='probability')
             # _, binary = init_loss(probs, batch_ys, end_points, losstype=FLAGS.losstype)
         if FLAGS.pretrained:
             # Load the pretrained model given by TensorFlow official
