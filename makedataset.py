@@ -12,9 +12,10 @@ import numpy as np
 from PIL import Image
 import logging
 import os
+import sys
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # 可以使用的GPU
-INPUT_DIR = './datasets/separate/'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'  # 可以使用的GPU
+INPUT_DIR = './datasets/separate_relabel/'
 OUTPUT_DIR = './datasets/'
 OUTPUT_CHANNEL = 3
 IMG_RESIZE = [512, 512]
@@ -22,6 +23,20 @@ CUT_NUM = [4, 2]
 
 CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
 CLASS_LIST_MAY = ['may_nodata', 'may_abcde', 'may_A', 'may_B', 'may_C', 'may_D', 'may_E']
+
+
+def processBar(num, total, msg='', length=30):
+    rate = num / total
+    rate_num = int(rate * 100)
+    clth = int(rate * length)
+    if len(msg) > 0:
+        msg += ':'
+    if rate_num == 100:
+        r = '\r%s[%s%d%%]\n' % (msg, '*' * length, rate_num,)
+    else:
+        r = '\r%s[%s%s%d%%]' % (msg, '*' * clth, '-' * (length - clth), rate_num,)
+    sys.stdout.write(r)
+    sys.stdout.flush
 
 
 def mk_childfolders(parent_dir, child_list=[]):
@@ -155,9 +170,11 @@ def init_separate_dataset(tag='train', start_index=None, max_count=None, datatyp
                     im = Image.fromarray(imgs[i])
                     im.save(save_path)
                 if int(org_name) % perc == 0:
-                    print('progress: {}/{}'.format(step, count))
+                    # print('progress: {}/{}'.format(step, count))
+                    processBar(step, count, msg="Initizing " + _output_dir)
                 step += 1
             except tf.errors.OutOfRangeError:
+                processBar(step, count, msg="Initizing " + _output_dir)
                 print('Finish!')
                 break
             except Exception as e:
@@ -166,7 +183,7 @@ def init_separate_dataset(tag='train', start_index=None, max_count=None, datatyp
                 pass
 
 
-def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=True):
+def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=False):
     assert channels in [1, 3]
     resize = img_resize is not None and type(img_resize) in [list, np.ndarray] and len(img_resize) == 2
 
@@ -183,9 +200,9 @@ def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=
                                            method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
         if shuffle:  # 随机亮度对比度色相翻转
             # ToDO: all images do with these
-            x_img = tf.image.random_brightness(x_img, max_delta=0.5)
-            x_img = tf.image.random_contrast(x_img, lower=-5, upper=5)
-            x_img = tf.image.random_hue(x_img, max_delta=0.5)
+            x_img = tf.image.random_brightness(x_img, max_delta=0.25)
+            x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
+            # x_img = tf.image.random_hue(x_img, max_delta=0.5)
             x_img = tf.image.random_flip_up_down(x_img)
             x_img = tf.image.random_flip_left_right(x_img)
         return file_path, x_img, label
@@ -202,51 +219,114 @@ def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=
         files.extend(fs)
         labels.extend([cls] * len(fs))
     count = len(files)
+    if shuffle:
+        import random
+        idx = list(range(count))
+        random.shuffle(idx)
+        sfl_files = []
+        sfl_labels = []
+        for i in idx:
+            sfl_files.append(files[i])
+            sfl_labels.append(labels[i])
+        files = sfl_files
+        labels = sfl_labels
     # Initialize as a tensorflow tensor object
-    data = tf.data.Dataset.from_tensor_slices((tf.constant(files, name='file_path'),
+    data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
                                                tf.constant(labels, name='label')))
     data = data.map(_parse_function)
-    if shuffle:
-        data = data.shuffle(count)
+    # if shuffle:
+    #     data = data.shuffle(count)
     return data, count
 
 
-def tfrecord_reader(filepaths, batch_size):
+def tfrecord_reader(filepaths, batch_size=24, num_epochs=1):
     # ToDO: try this
+    assert batch_size >= 0 and type(batch_size) is int
     reader = tf.TFRecordReader()
-    # 读取一个样例
-    # _,serialized_example=reader.read(filepaths)
-    # 读取多个样例
-    _, serialized_example = reader.read_up_to(filepaths, num_records=batch_size)
-    features = tf.parse_example(
+    if type(filepaths) is not list:
+        filepaths = [filepaths]
+    fqueue = tf.train.string_input_producer(filepaths, num_epochs=num_epochs)  # 此处不指定epochs就会一直持续下去
+    _, serialized_example = reader.read(fqueue)
+    features = tf.parse_single_example(
         serialized_example,
         features={
             'name': tf.FixedLenFeature([], tf.string),
             'label': tf.FixedLenFeature([], tf.string),
             'image': tf.FixedLenFeature([], tf.string),
+            'height': tf.FixedLenFeature([], tf.int64),
+            'width': tf.FixedLenFeature([], tf.int64),
+            'channel': tf.FixedLenFeature([], tf.int64),
         })
-    names = tf.decode_raw(features['name'], tf.uint8)
-    labels = tf.decode_raw(features['label'], tf.uint8)
-    images = tf.decode_raw(features['image'], tf.uint8)
-    return names, labels, images
+    name = tf.decode_raw(features['name'], tf.uint8)
+    label = tf.decode_raw(features['label'], tf.uint8)
+    image = tf.decode_raw(features['image'], tf.uint8)
+    height = tf.cast(features['height'], tf.int32)
+    width = tf.cast(features['width'], tf.int32)
+    channel = tf.cast(features['channel'], tf.int32)
+    image_shape = tf.stack([height, width, channel])
+    image = tf.reshape(image, image_shape)
+    # set_shape是为了固定维度，方便后面使用tf.train.batch
+    label.set_shape([1])
+    name.set_shape([1])
+    image.set_shape([32, 32, 3])
+    # num_thread可以选择用几个线程同时读取example queue，
+    # min_after_dequeue表示读取一次之后队列至少需要剩下的样例数目，capacity表示队列的容量
+    names, images, labels = tf.train.batch([name, image, label], batch_size=batch_size,
+                                                  capacity=512 + 4 * batch_size)
+    return names, images, labels
 
 
-def init_binary_dataset(save_name, tag, datatype):
+def check_tfrecord():
+    path = r'D:\qxliu\ordinal_clouds\datasets\clouds.shuffle.train.tfrecord'
+    name_op, label_op, image_op = tfrecord_reader(path)
+    import cv2 as cv
+    with tf.Session() as sess:
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        sess.run(init_op)
+
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        try:
+            while True:
+                name, label, img = sess.run([name_op, label_op, image_op])
+                img = np.squeeze(img, axis=0)
+                label = np.squeeze(label, axis=0)
+                print(name.tostring().decode('utf8'))
+                print(label.tostring().decode('utf8'))
+                # plt.imshow(img)
+                cv.imshow('img', img)
+                cv.waitKey(50)
+        except tf.errors.OutOfRangeError:
+            print('End')
+        finally:
+            coord.request_stop()
+        coord.join(threads)  # 等待各线程关闭
+
+
+def init_binary_dataset(save_name, tag, datatype, shuffle):
     assert tag in ['train', 'validation']
     assert datatype in ['tfrecord', 'json', 'h5']
 
     def _bytes_feature(value):  # 生成字符串型的属性
         return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
+    def _int64_feature(value):  # 生成整数型的属性
+        return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+
     # ToDO: arrange more datatype
     input_dir = os.path.join(INPUT_DIR, tag)
     output_dir = OUTPUT_DIR
     mk_childfolders(output_dir)
-    reader, count = init_img_reader(input_dir, class_list=CLASS_LIST, img_resize=[32, 32], channels=OUTPUT_CHANNEL)
+    reader, count = init_img_reader(input_dir, class_list=CLASS_LIST,
+                                    img_resize=[32, 32], channels=OUTPUT_CHANNEL, shuffle=shuffle)
     fpath, xs, ys = reader.make_one_shot_iterator().get_next()
     # param batch_xs: shape [32, 32, channels] type tf.uint8
     # param batch_ys: shape [1] type tf.int32
     logging.basicConfig(filename=os.path.join(OUTPUT_DIR, 'log.txt'), level=logging.DEBUG)
+    if shuffle:
+        save_name += '.shuffle'
+    else:
+        save_name += '.noshuffle'
     output_path = os.path.join(output_dir, '{}.{}.{}'.format(save_name, tag, datatype))
 
     with tf.Session() as sess:
@@ -260,21 +340,21 @@ def init_binary_dataset(save_name, tag, datatype):
                         org_path, img, label = sess.run([fpath, xs, ys])
                         org_name = os.path.basename(org_path.decode()).split('.')[0]
                         example = tf.train.Example(features=tf.train.Features(feature={
-                            'name': _bytes_feature(np.array(org_name).tobytes()),
-                            'label': _bytes_feature(np.array(label).tobytes()),
+                            'name': _bytes_feature(org_name.encode('utf8')),
+                            'label': _bytes_feature(label),
+                            'height': _int64_feature(32),
+                            'width': _int64_feature(32),
+                            'channel': _int64_feature(3),
                             'image': _bytes_feature(img.tostring())
                         }))
                         writer.write(example.SerializeToString())
                         if int(org_name) % perc == 0:
-                            print('progress: {}/{}'.format(step, count))
+                            processBar(step, count, msg="Initizing " + output_path)
                         step += 1
                     except tf.errors.OutOfRangeError:
+                        processBar(step, count, msg="Initizing " + output_path)
                         print('Finish!')
                         break
-                    except Exception as e:
-                        print('an error accrue when open file %s' % org_path.decode())
-                        print(e)
-                        pass
         elif datatype == 'json':
             pass
         elif datatype == 'h5':
@@ -289,14 +369,15 @@ def main():
         init_separate_dataset('validation', 0, -1)
 
     def _make_tfrecord_dataset():
-        # print('Begin to initialize training dataset...')
-        # init_binary_dataset('mode_2004','train', 'tfrecord')
+        print('Begin to initialize training dataset...')
+        init_binary_dataset('clouds', tag='train', datatype='tfrecord', shuffle=True)
         print('Begin to initialize validation dataset...')
-        init_binary_dataset('mode_2004', 'validation', 'tfrecord')
+        init_binary_dataset(save_name='clouds', tag='validation', datatype='tfrecord', shuffle=True)
 
     begintime = datetime.now()
     # _make_separate_dataset()
-    _make_tfrecord_dataset()
+    # _make_tfrecord_dataset()
+    check_tfrecord()
     endtime = datetime.now()
     print('All dataset initialized!  Span Time:%s' % (endtime - begintime))
 
