@@ -25,7 +25,7 @@ flags.DEFINE_string('official_model_path', './pretrained/resnet_v1_{}.ckpt',
 flags.DEFINE_string('data_dir', './datasets/separate_relabel/', 'Where is the input data in')
 flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
                     'Save user models and logs, ends with 1.unpre/pre* 2.optimizer 3.loss type')
-flags.DEFINE_string('model_name', 'resnet.model', 'model name')
+flags.DEFINE_string('model_name', 'ordinal_clouds.ckpt', 'model name')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
 flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
@@ -486,7 +486,7 @@ def main(_):
                 # ToDO: finish this
     if not FLAGS.is_training:  # Evaluate
         with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_test):
-            probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=False)
+            probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT,)
             probs = tf.squeeze(probs, name='probability')
             prediction = tf.argmax(probs, axis=-1, output_type=tf.int32, name='prediction')
             acc_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
