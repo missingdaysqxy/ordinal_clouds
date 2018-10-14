@@ -35,9 +35,9 @@ flags.DEFINE_integer('loops', 10000, 'Number of iterations, only works when loop
                                      'Note: it will be modified when the data count is less')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
-flags.DEFINE_boolean('is_training', True, 'Train or evaluate?')
+flags.DEFINE_boolean('is_training', False, 'Train or evaluate?')
 flags.DEFINE_boolean('test_after_train', True, 'Test the model on validation dataset after train')
-flags.DEFINE_string('model_to_load', 'none',
+flags.DEFINE_string('model_to_load', 'last',
                     "Which pretrained model to use, choose from 'pretrained','last','none'")
 
 FLAGS = flags.FLAGS
@@ -103,7 +103,7 @@ def _get_save_dir(flags):
 
 
 def save(sess, model_path, counter):
-    saver = tf.train.Saver(max_to_keep=3)
+    saver = tf.train.Saver()
     save_dir, model_name = os.path.split(model_path)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -113,17 +113,17 @@ def save(sess, model_path, counter):
 
 def load_user_model(sess, model_dir):
     import re
-    print(' [*] Load last model in {}...'.format(model_dir))
+    print('-[*] Load last model in {}'.format(model_dir))
     ckpt = tf.train.get_checkpoint_state(model_dir)
-    saver = tf.train.Saver(max_to_keep=1)
+    saver = tf.train.Saver()
     if ckpt and ckpt.model_checkpoint_path:
         ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
         saver.restore(sess, os.path.join(model_dir, ckpt_name))
         counter = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
-        print(" [*] Success to read {}".format(ckpt_name))
+        print("-[*] Success to read {}".format(ckpt_name))
         return counter
     else:
-        print(" [*] No checkpoint files were found")
+        print("-[*] No checkpoint files were found")
         return ERROR_FLAG
 
 
@@ -333,9 +333,8 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
     logging.basicConfig(filename=os.path.join(savedir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
     for it in range(loops):
         try:
-            sess.run(train_op)  # main train step
+            _, loss_val, sum_str, step_val, = sess.run([train_op, loss_t, summary_t, global_step_t, ])  # main train step
             if it % logiter == 0:  # log summaries
-                loss_val, sum_str, step_val, = sess.run([loss_t, summary_t, global_step_t, ])
                 step_val -= 1  # As 'global_step_t' already increased after 'sess.run(train_op)', here we decrease 'step_val' by one
                 writer.add_summary(sum_str, step_val)
                 time_elapse = datetime.now() - time_begin
@@ -353,7 +352,6 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
             logging.error('tf.errors.InvalidArgumentError:\r\n' + e.message)
             continue
         except tf.errors.OutOfRangeError:
-            loss_val, sum_str, step_val, = sess.run([loss_t, summary_t, global_step_t, ])
             writer.add_summary(sum_str, step_val)
             msg = 'Epoch reach the end, final loss value is {}'.format(loss_val)
             logmsg = processBar(it, loops, msg, 50)
@@ -364,9 +362,9 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
     return step_val
 
 
-def evaluate(sess, acc_t, probs_t, labels_t, summary_t, loops, logiter, savedir):
+def evaluate(sess, acc_t, probs_t, labels_t, summary_t, savedir, loops, logiter):
     accuracies = []
-    suffix = int(time())
+    suffix = str(int(time()))
     logpath = os.path.join(savedir, 'evaluate.output-{}.txt'.format(suffix))
     logging.basicConfig(filename=logpath, level=logging.DEBUG)
     writer = tf.summary.FileWriter(savedir, sess.graph, filename_suffix=suffix)
