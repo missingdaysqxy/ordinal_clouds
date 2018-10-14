@@ -9,7 +9,7 @@ from time import time
 from tabulate import tabulate
 import logging
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,2'  # 可以使用的GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'  # 可以使用的GPU
 gpu_train = '/gpu:1'
 gpu_test = '/gpu:0'
 # TODO: output the results to file "results.csv" and compute the confusion matrix
@@ -20,23 +20,25 @@ CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
 CLASS_COUNT = len(CLASS_LIST)
 
 flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
-flags.DEFINE_string('official_model_path', './officialmodels/resnet_v1_{}.ckpt', '')
-flags.DEFINE_string('data_dir', './datasets/separate_relabel/', '')
+flags.DEFINE_string('official_model_path', './pretrained/resnet_v1_{}.ckpt',
+                    'If \'model_to_load\' is \'pretrained\', then this file will be loaded as a pretrained model')
+flags.DEFINE_string('data_dir', './datasets/separate_relabel/', 'Where is the input data in')
 flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
                     'Save user models and logs, ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('model_name', 'resnet.model', 'model name')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
 flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
-flags.DEFINE_integer('epoch', 5, 'Count of epoch')
-flags.DEFINE_boolean('fullytrain', True, 'Train all images in dataset')
-flags.DEFINE_integer('loops', 10000, 'Number of iteration in training, only works when fullytrain is False')
+flags.DEFINE_integer('epoch', 1, 'Count of epoch, if zero, the dataset will be empty')
+flags.DEFINE_boolean('loop_all', True, 'Train all images in dataset')
+flags.DEFINE_integer('loops', 10000, 'Number of iterations, only works when loop_all is False. '
+                                     'Note: it will be modified when the data count is less')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
-flags.DEFINE_boolean('is_training', False, 'Train or evaluate?')
-flags.DEFINE_boolean('test_after_train',True,'Test the model on validation dataset after train')
-flags.DEFINE_string('model_to_load', 'last',
-                    "Which pretrained model to use, choose from 'offical','last','none'")
+flags.DEFINE_boolean('is_training', True, 'Train or evaluate?')
+flags.DEFINE_boolean('test_after_train', True, 'Test the model on validation dataset after train')
+flags.DEFINE_string('model_to_load', 'none',
+                    "Which pretrained model to use, choose from 'pretrained','last','none'")
 
 FLAGS = flags.FLAGS
 
@@ -56,6 +58,20 @@ def processBar(num, total, msg='', length=50):
     return r.replace('\r', ':')
 
 
+def _checkflags(flags):
+    assert flags.resnet_model in [50, 101, 152, 200]
+    assert os.path.exists(flags.data_dir)
+    assert flags.optimizer in ['SGD', 'Adam']
+    assert flags.loss_type in ['ordinal', 'cross_entropy']
+    assert flags.batch_size % 8 == 0 and flags.batch_size > 0
+    assert flags.epoch >= 0
+    assert flags.loops >= 0
+    assert flags.learning_rate > 0
+    assert flags.regularize_scale > 0
+    assert flags.model_to_load in ['pretrained', 'last', 'none']
+    print(flags)
+
+
 def _get_session_config():
     config = tf.ConfigProto()
     # config.gpu_options.report_tensor_allocations_upon_oom = True
@@ -64,9 +80,8 @@ def _get_session_config():
     # config.gpu_options.per_process_gpu_memory_fraction  = 0.5
     return config
 
-
 def _get_save_dir(flags):
-    if flags.pretrained:
+    if flags.model_to_load == 'pretrained':
         mtype = 'pre' + str(flags.resnet_model)
     else:
         mtype = 'unpre' + str(flags.resnet_model)
@@ -80,7 +95,7 @@ def _get_save_dir(flags):
         num = int(max(list))
     except:
         num = 0
-    if flags.is_training and not flags.use_last_model:
+    if flags.is_training and flags.model_to_load != 'last':
         dir += str(num + 1)
     else:
         dir += str(num)
@@ -93,7 +108,7 @@ def save(sess, model_path, counter):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     save_path = saver.save(sess, model_path, global_step=counter)
-    print('MODEL RESTORED IN: ' + save_path)
+    return save_path
 
 
 def load_user_model(sess, model_dir):
@@ -190,13 +205,12 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         if resize:
             x_img = tf.image.resize_images(x_img, size=img_resize,
                                            method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
-        if shuffle:  # 随机亮度对比度色相翻转
-            # ToDO: all images do with these
-            x_img = tf.image.random_brightness(x_img, max_delta=0.25)
-            x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
-            # x_img = tf.image.random_hue(x_img, max_delta=0.5)
-            x_img = tf.image.random_flip_up_down(x_img)
-            x_img = tf.image.random_flip_left_right(x_img)
+        # if shuffle:  # 随机亮度对比度色相翻转
+        #     x_img = tf.image.random_brightness(x_img, max_delta=0.25)
+        #     x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
+        #     # x_img = tf.image.random_hue(x_img, max_delta=0.5)
+        #     x_img = tf.image.random_flip_up_down(x_img)
+        #     x_img = tf.image.random_flip_left_right(x_img)
         return x_img, label
 
     files = []
@@ -225,15 +239,16 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         labels = sfl_labels
     if count % batch_size > 0:
         count = count - count % batch_size
-        files = files[:count]
-        labels = labels[:count]
+        # files = files[:count]
+        # labels = labels[:count]
     # Initialize as a tensorflow tensor object
     data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
                                                tf.constant(labels, name='label')))
+    data=data.repeat(epoch)
     data = data.map(_parse_function)
     # if shuffle:
     #     data = data.shuffle(count)
-    return data.batch(batch_size).repeat(epoch), count // batch_size * epoch
+    return data.batch(batch_size), count // batch_size * epoch
 
 
 class Confusion(object):
@@ -295,7 +310,7 @@ def init_loss(logits, labels, loss_type='ordinal'):
         return loss
 
 
-def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logiter):
+def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logiter, save_limit=1.4):
     '''
     Main function to train the resnet
     :param sess: tensorflow session
@@ -306,6 +321,8 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
     :param loops: int
     :param savedir: string
     :param logiter: int, log the summaries after each 'logiter' iterations
+    :param save_limit: float, when the loss value is less than save_limit, the model will save a temp copy.
+            this value will change to the minimize loss value during training
     :return:
     '''
     time_begin = datetime.now()
@@ -319,14 +336,16 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
             sess.run(train_op)  # main train step
             if it % logiter == 0:  # log summaries
                 loss_val, sum_str, step_val, = sess.run([loss_t, summary_t, global_step_t, ])
+                step_val -= 1  # As 'global_step_t' already increased after 'sess.run(train_op)', here we decrease 'step_val' by one
                 writer.add_summary(sum_str, step_val)
                 time_elapse = datetime.now() - time_begin
                 time_remain = time_elapse / (it + 1) * (loops - it - 1)
-                msg = '[*]elapsed time:{} remaining time:{} step:{} loss:{}'. \
+                msg = 'elapsed time:{} remaining time:{} step:{} loss:{}'. \
                     format(time_elapse, time_remain, step_val, loss_val)
                 logmsg = processBar(it, loops, msg, 50)
                 logging.info(logmsg)
-                if loss_val < 1.5:
+                if loss_val < save_limit:
+                    save_limit = loss_val
                     save(sess, os.path.join(savedir, 'tmp_loss{:.3f}'.format(loss_val) + FLAGS.model_name), step_val)
         except tf.errors.InvalidArgumentError as e:
             print('An error of type tf.errors.InvalidArgumentError has been ignored...')
@@ -379,6 +398,7 @@ def evaluate(sess, acc_t, probs_t, labels_t, summary_t, loops, logiter, savedir)
 
 
 def main(_):
+    _checkflags(FLAGS)
     reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'validation')
                                          , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True)
     batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
@@ -402,10 +422,16 @@ def main(_):
 
     resnet = _get_resnet()
     savedir = _get_save_dir(FLAGS)
+    os.makedirs(savedir, exist_ok=True)
+    confile=open(os.path.join(savedir,'flags.configs.txt'),mode='a',encoding='utf8')
+    confile.write(str(FLAGS))
+    confile.close()
     if FLAGS.is_training:
+        print('[*]Training logs and models will be saved into %s' % os.path.abspath(savedir))
         with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_train):
             # param logits: shape [batch_size, CLASS_COUNT]
             logits, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=True)
+            logits = tf.squeeze(logits, name='probability')
             prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
             loss_t = init_loss(logits, batch_ys, loss_type=FLAGS.loss_type)
             mAP_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
@@ -413,8 +439,8 @@ def main(_):
             if FLAGS.model_to_load.lower() == 'last':
                 # Load the last model trained by ourselves
                 global_step_init_value = load_user_model(sess, savedir)
-            elif FLAGS.model_to_load.lower() == 'official':
-                # Load the pretrained model given by TensorFlow official
+            elif FLAGS.model_to_load.lower() == 'pretrained':
+                # Load the model pretrained by TensorFlow official
                 global_step_init_value = 0
                 exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
                 resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
@@ -422,9 +448,10 @@ def main(_):
                 init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
                                                          ignore_missing_vars=True)
                 init_fn(sess)
-                print('Pretrained model %s successfully loaded' % path)
+                print('[*]Pretrained model %s successfully loaded' % path)
             elif FLAGS.model_to_load.lower() == 'none':
                 global_step_init_value = 0
+            print('[*]Init global_step with value of %d' % global_step_init_value)
             global_step = tf.Variable(global_step_init_value, trainable=False, name='global_step')
             # variable averages operation
             variable_averages = tf.train.ExponentialMovingAverage(decay=0.99, num_updates=global_step)
@@ -447,18 +474,22 @@ def main(_):
             # Init all variables
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
             sess.run(init_op)
-            loops = data_count if FLAGS.fullytrain else min(FLAGS.loops, data_count)
+            loops = data_count if FLAGS.loop_all else min(FLAGS.loops, data_count)
             # Ready to Train
             final_step_val = train(sess, train_op, global_step, loss_t, summaries, savedir, loops, logiter=10)
-            print('Training finished, try to save the model...')
-            save(sess, os.path.join(savedir, FLAGS.model_name), final_step_val)
+            print('[*]Training finished, try to save the model...')
+            save_path = save(sess, os.path.join(savedir, FLAGS.model_name), final_step_val)
+            print('model saved into %s' % os.path.abspath(save_path))
             if FLAGS.test_after_train:
-                print('Prepare to test the model...')
+                print('[*]Prepare to test the model...')
+                t_savedir = os.path.join(savedir, 'test')
+                print('[*]Test logs and summaries will be saved into %s' % os.path.abspath(t_savedir))
+                os.makedirs(t_savedir, exist_ok=True)
                 # ToDO: finish this
     if not FLAGS.is_training:  # Evaluate
         with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_test):
             probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=False)
-            # probs = tf.reshape(probs, [-1, CLASS_COUNT], name='probability')
+            probs = tf.squeeze(probs, name='probability')
             prediction = tf.argmax(probs, axis=-1, output_type=tf.int32, name='prediction')
             acc_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
             summary_t = tf.summary.scalar('accuracy', acc_t)
@@ -468,7 +499,7 @@ def main(_):
             if FLAGS.model_to_load.lower() == 'last':
                 # Load the last model trained by ourselves
                 load_user_model(sess, savedir)
-            elif FLAGS.model_to_load.lower() == 'official':
+            elif FLAGS.model_to_load.lower() == 'pretrained':
                 # Load the pretrained model given by TensorFlow official
                 exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
                 resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
@@ -476,12 +507,14 @@ def main(_):
                 init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
                                                          ignore_missing_vars=True)
                 init_fn(sess)
-                print('Pretrained model %s successfully loaded' % path)
+                print('[*]Pretrained model %s successfully loaded' % path)
             elif FLAGS.model_to_load.lower() == 'none':
                 pass
-            savedir = os.path.join(savedir, 'test')
-            accuracies = evaluate(sess, acc_t, probs, batch_ys, summary_t, savedir, loops=data_count, logiter=10)
-            print('The model accuracy is {}'.format(sum(accuracies) / len(accuracies)))
+            e_savedir = os.path.join(savedir, 'evaluate')
+            print('[*]Evaluate logs and summaries will be saved into %s' % os.path.abspath(e_savedir))
+            os.makedirs(e_savedir, exist_ok=True)
+            accuracies = evaluate(sess, acc_t, probs, batch_ys, summary_t, e_savedir, loops=data_count, logiter=10)
+            print('[*]The model accuracy is {}'.format(sum(accuracies) / len(accuracies)))
 
 
 if __name__ == '__main__':
