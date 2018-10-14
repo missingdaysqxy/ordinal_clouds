@@ -266,8 +266,8 @@ def tfrecord_reader(filepaths, batch_size=24, num_epochs=1):
     image_shape = tf.stack([height, width, channel])
     image = tf.reshape(image, image_shape)
     # set_shape是为了固定维度，方便后面使用tf.train.batch
-    label.set_shape([1])
-    name.set_shape([1])
+    #label.set_shape([10])
+    #name.set_shape([10])
     image.set_shape([32, 32, 3])
     # num_thread可以选择用几个线程同时读取example queue，
     # min_after_dequeue表示读取一次之后队列至少需要剩下的样例数目，capacity表示队列的容量
