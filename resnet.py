@@ -9,7 +9,7 @@ from time import time
 from tabulate import tabulate
 import logging
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'  # 可以使用的GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,2'  # 可以使用的GPU
 gpu_net = '/gpu:1'
 gpu_opt = '/gpu:0'
 gpu_evl = '/gpu:1'
@@ -17,24 +17,24 @@ gpu_evl = '/gpu:1'
 
 flags = tf.app.flags
 ERROR_FLAG = 0
-CLASS_COUNT = 6
+CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
+CLASS_COUNT = len(CLASS_LIST)
 
-flags.DEFINE_integer('resnet_model', 50, 'The layers count of resnet: 50, 101 or 152')
+flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
 flags.DEFINE_string('pretrain_path', './pretrained/resnet_v1_{}.ckpt', '')
-flags.DEFINE_string('data_dir', './datasets/mode_2004/', '')
-flags.DEFINE_string('model_dir', './checkpoints/models_{}_{}_{}-',
-                    'Folder path ends with 1.unpre/pre* 2.optimizer 3.loss type')
+flags.DEFINE_string('data_dir', './datasets/separate_relabel/', '')
+flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
+                    'Save user models and logs, ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('model_name', 'resnet.model', 'model name')
-flags.DEFINE_string('logdir', './logs/logs_{}_{}_{}-', 'Folder path ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('losstype', 'cross_entropy', 'Either ordinal or cross_entropy')
-flags.DEFINE_integer('batch_size', 32, 'How many big images in a batch, so the small images count is 8 * batch_size')
-flags.DEFINE_integer('epoch', 1, 'Count of epoch')
+flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
+flags.DEFINE_integer('epoch', 5, 'Count of epoch')
 flags.DEFINE_boolean('fullytrain', True, 'Train all images in dataset')
-flags.DEFINE_integer('loops', 1000, 'Number of iteration in training, only works when fullytrain is False')
+flags.DEFINE_integer('loops', 10000, 'Number of iteration in training, only works when fullytrain is False')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
-flags.DEFINE_boolean('is_training', True, 'Train or evaluate?')
+flags.DEFINE_boolean('is_training', False, 'Train or evaluate?')
 flags.DEFINE_boolean('pretrained', False,
                      'Whether using the pretrained model given by TensorFlow or not')
 flags.DEFINE_boolean('use_last_model', True,
@@ -52,12 +52,12 @@ def _get_session_config():
     return config
 
 
-def __parse_dir(flags, dir_to_parse):
+def _get_save_dir(flags):
     if flags.pretrained:
         mtype = 'pre' + str(flags.resnet_model)
     else:
         mtype = 'unpre' + str(flags.resnet_model)
-    dir = dir_to_parse.format(mtype, flags.optimizer, flags.losstype)
+    dir = flags.save_dir.format(mtype, flags.optimizer, flags.losstype)
     dir = os.path.abspath(dir)
     basedir, name = os.path.split(dir)
     try:
@@ -74,19 +74,11 @@ def __parse_dir(flags, dir_to_parse):
     return dir
 
 
-def _get_model_dir(flags=FLAGS):
-    return __parse_dir(flags, flags.model_dir)
-
-
-def _get_log_dir(flags=FLAGS):
-    return __parse_dir(flags, flags.logdir)
-
-
 def save(sess, model_path, counter):
     saver = tf.train.Saver(max_to_keep=3)
-    model_dir, model_name = os.path.split(model_path)
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
+    save_dir, model_name = os.path.split(model_path)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
     save_path = saver.save(sess, model_path, global_step=counter)
     print('MODEL RESTORED IN: ' + save_path)
 
@@ -107,7 +99,7 @@ def load_user_model(sess, model_dir):
         return ERROR_FLAG
 
 
-def init_reader(path, batch_size, epoch, is_training):
+def init_csv_reader(path, batch_size, epoch, is_training):
     '''
     get a tensorflow dataset
     :param path:
@@ -156,6 +148,81 @@ def init_reader(path, batch_size, epoch, is_training):
         return data.batch(batch_size), count
 
 
+def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, channels=3, shuffle=False):
+    '''
+
+    :param input_dir:
+    :param batch_size:
+    :param epoch:
+    :param class_list:
+    :param img_resize:
+    :param channels:
+    :param shuffle:
+    :return: dataset:
+            coutn: dataset可以get_next的次数（在当前epoch与batch_size下）
+    '''
+    assert channels in [1, 3]
+    assert batch_size > 0
+    assert epoch > 0
+    resize = img_resize is not None and type(img_resize) in [list, np.ndarray] and len(img_resize) == 2
+
+    def _parse_function(file_path, label):
+        '''Decode image
+        :param file_path: shape[]
+        :param label: shape[]
+        :return a string of image file path, a tensor of image, a label string of image
+        '''
+        x_img_str = tf.read_file(file_path)  # shape[]
+        x_img = tf.image.decode_jpeg(x_img_str, channels=channels)  # shape[?,?,channels]
+        if resize:
+            x_img = tf.image.resize_images(x_img, size=img_resize,
+                                           method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
+        if shuffle:  # 随机亮度对比度色相翻转
+            # ToDO: all images do with these
+            x_img = tf.image.random_brightness(x_img, max_delta=0.25)
+            x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
+            # x_img = tf.image.random_hue(x_img, max_delta=0.5)
+            x_img = tf.image.random_flip_up_down(x_img)
+            x_img = tf.image.random_flip_left_right(x_img)
+        return x_img, label
+
+    files = []
+    labels = []
+    for i in range(len(class_list)):
+        dir = os.path.join(input_dir, class_list[i])
+        if not os.path.exists(dir):
+            print('path %s not exist' % dir)
+            continue
+        fs = os.listdir(dir)
+        fs = [os.path.join(dir, item) for item in fs]
+        files.extend(fs)
+        labels.extend([i] * len(fs))
+    count = len(files)
+    assert count > batch_size
+    if shuffle:
+        import random
+        idx = list(range(count))
+        random.shuffle(idx)
+        sfl_files = []
+        sfl_labels = []
+        for i in idx:
+            sfl_files.append(files[i])
+            sfl_labels.append(labels[i])
+        files = sfl_files
+        labels = sfl_labels
+    if count % batch_size > 0:
+        count = count - count % batch_size
+        files = files[:count]
+        labels = labels[:count]
+    # Initialize as a tensorflow tensor object
+    data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
+                                               tf.constant(labels, name='label')))
+    data = data.map(_parse_function)
+    # if shuffle:
+    #     data = data.shuffle(count)
+    return data.batch(batch_size).repeat(epoch), count // batch_size * epoch
+
+
 class Confusion(object):
     '''
      To compute the confusion matrix
@@ -184,13 +251,11 @@ class Confusion(object):
         return tabulate(matrix, headers=self.headers, tablefmt='grid')
 
 
-def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False), logiter=100, predct=None,
-          labels=None):
+def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False),
+          predct=None, labels=None, accuracy=None, logiter=20, ):
     def _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val):
         sum_str, lossval = sess.run([summaries, loss])
-        if predct != None and labels != None:
-            correct_prediction = tf.equal(predct, labels)
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+        if predct != None and labels != None and accuracy != None:
             predval, ys, accval = sess.run([predct, labels, accuracy])
             cf = Confusion(predictions=predval, labels=ys)
             msg = '[*]step:{}  accuracy:{}  Confusion Matrix:\n{}'.format(step_val, accval, cf)
@@ -200,12 +265,12 @@ def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False),
         return lossval
 
     time_begin = datetime.now()
-    logdir = _get_log_dir(FLAGS)
-    if not os.path.exists(logdir):
-        os.makedirs(logdir)
+    savedir = _get_save_dir(FLAGS)
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
     suffix = str(int(time()))
-    writer = tf.summary.FileWriter(logdir, sess.graph, filename_suffix=suffix)
-    logging.basicConfig(filename=os.path.join(logdir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
+    writer = tf.summary.FileWriter(savedir, sess.graph, filename_suffix=suffix)
+    logging.basicConfig(filename=os.path.join(savedir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
     for it in range(loop):
         try:
             _, step_val = sess.run([optim, global_step])
@@ -217,9 +282,8 @@ def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False),
                     format(time_elapse, time_remain, it, loop, lossval)
                 print(msg)
                 logging.info(msg)
-                if lossval < 2:
-                    save(sess, os.path.join(_get_model_dir(FLAGS),
-                                            'tmp_loss{:.3f}'.format(lossval) + FLAGS.model_name), step_val)
+                if lossval < 1.5:
+                    save(sess, os.path.join(savedir, 'tmp_loss{:.3f}'.format(lossval) + FLAGS.model_name), step_val)
         except tf.errors.InvalidArgumentError as e:
             print('An error of type tf.errors.InvalidArgumentError has been ignored...')
             print(e.message)
@@ -233,14 +297,14 @@ def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False),
             break
     time_elapse = datetime.now() - time_begin
     print('Training finish, elapsed time %s...Trying to save the model...' % time_elapse)
-    save(sess, os.path.join(_get_model_dir(FLAGS), FLAGS.model_name), step_val)
+    save(sess, os.path.join(savedir, FLAGS.model_name), step_val)
 
 
 def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
     cnt = 0;
     accsum = 0.0
     suffix = int(time())
-    logpath = os.path.join(_get_log_dir(FLAGS), 'evaluate.output-{}.txt'.format(suffix))
+    logpath = os.path.join(_get_save_dir(FLAGS), 'evaluate.output-{}.txt'.format(suffix))
     logging.basicConfig(filename=logpath, level=logging.DEBUG)
     cf = Confusion(headers=['A', 'B', 'C', 'D', 'E', '*'])
     with tf.device(gpu_evl):
@@ -257,13 +321,14 @@ def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
                 if cnt % logiter == 0:
                     msg = 'iteration: {}/{}  accuracy: {}\r\nconfusion matrix:\r\n{}'.format(cnt, loop, accval, cf)
                     print(msg)
-                    print('pre:{}\nlable:{}'.format(predval,ys))
+                    #print('pre:{}\nlable:{}'.format(predval, ys))
                     logging.info(msg)
             except tf.errors.InvalidArgumentError:
                 print('An error of type tf.errors.InvalidArgumentError has been ignored...')
                 logging.error('tf.errors.InvalidArgumentError')
                 continue
             except tf.errors.OutOfRangeError:
+                print('Dataset reach the end.')
                 break
             except tf.errors.NotFoundError:
                 break
@@ -302,16 +367,18 @@ def init_loss(logits, labels, end_points=None, losstype='ordinal'):
 
 
 def main(_):
-    reader, data_count = init_reader(FLAGS.data_dir, FLAGS.batch_size, FLAGS.epoch, FLAGS.is_training)
+    reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'validation')
+                                         , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True)
     batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
-    # param batch_xs: shape [batch_size, 128, 64, 3] type tf.float32
+    # param batch_xs: shape [batch_size, 32, 32, 3] type tf.float32
     # param batch_ys: shape [batch_size] type tf.int32
-    off_hs = [0, 0, 32, 32, 64, 64, 96, 96]
-    off_ws = [0, 32, 0, 32, 0, 32, 0, 32]
-    x_img_cuts = [tf.image.crop_to_bounding_box(batch_xs, hs, ws, 32, 32) \
-                  for hs, ws in zip(off_hs, off_ws)]
-    batch_xs = tf.reshape(tf.concat(x_img_cuts, axis=0), [-1, 32, 32, 3])  # shape [batch_size * 8, 32, 32, 3]
-    batch_ys = tf.reshape(batch_ys, [-1])  # shape [batch_size * 8]
+
+    # off_hs = [0, 0, 32, 32, 64, 64, 96, 96]
+    # off_ws = [0, 32, 0, 32, 0, 32, 0, 32]
+    # x_img_cuts = [tf.image.crop_to_bounding_box(batch_xs, hs, ws, 32, 32) \
+    #               for hs, ws in zip(off_hs, off_ws)]
+    # batch_xs = tf.reshape(tf.concat(x_img_cuts, axis=0), [-1, 32, 32, 3])  # shape [batch_size * 8, 32, 32, 3]
+    # batch_ys = tf.reshape(batch_ys, [-1])  # shape [batch_size * 8]
 
     config = _get_session_config()
     sess = tf.InteractiveSession(config=config)
@@ -356,7 +423,7 @@ def main(_):
             print('Pretrained model %s successfully loaded' % path)
         elif FLAGS.use_last_model:
             # Load the last model trained by ourselves
-            step_num = load_user_model(sess, _get_model_dir(FLAGS))
+            step_num = load_user_model(sess, _get_save_dir(FLAGS))
 
         with tf.device(gpu_opt):
             global_step = tf.Variable(step_num, trainable=False)
@@ -367,15 +434,17 @@ def main(_):
             elif 'Adam' in FLAGS.optimizer:
                 optim = tf.train.AdamOptimizer(learning_rate).minimize(loss, global_step=global_step)
             else:
-                optim = None
                 raise NotImplementedError
 
         # Ready to train
-        sess.run(tf.global_variables_initializer())
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        sess.run(init_op)
         loops = FLAGS.loops
         if FLAGS.fullytrain:
-            loops = data_count * FLAGS.epoch
-        train(sess, optim, loss, summaries, loops, global_step=global_step, predct=prediction, labels=batch_ys)
+            loops = data_count
+        else:
+            loops = min(loops, data_count)
+        train(sess, optim, loss, summaries, loops, global_step, prediction, batch_ys, mAP)
         print('Training finished')
     else:  # Evaluate
         with slim.arg_scope(resnet_v1.resnet_arg_scope()):
@@ -393,12 +462,15 @@ def main(_):
             print('Pretrained model %s successfully loaded' % path)
         elif FLAGS.use_last_model:
             # Load the last model trained by ourselves
-            load_user_model(sess, _get_model_dir(FLAGS))
-
-        sess.run(tf.global_variables_initializer())
+            load_user_model(sess, _get_save_dir(FLAGS))
+        else:
+            raise NotImplementedError
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        sess.run(init_op)
         # TODO: Consider the binary classification...
         # which is even more tricky to be implemented...
-        print('The model accuracy is {}'.format(evaluate(sess, probabilities=probs, labels=batch_ys)))
+        accsum_val = evaluate(sess, probabilities=probs, labels=batch_ys)
+        print('The model accuracy is {}'.format(accsum_val))
 
 
 if __name__ == '__main__':
