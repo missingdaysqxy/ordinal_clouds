@@ -3,6 +3,7 @@ datasets/*
 logs/*
 oldlogs/*
 pretrained/*
+officialmodels/*
 checkpoints/*
 __pycache__/
 hooks/

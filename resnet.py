@@ -10,9 +10,8 @@ from tabulate import tabulate
 import logging
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,2'  # 可以使用的GPU
-gpu_net = '/gpu:1'
-gpu_opt = '/gpu:0'
-gpu_evl = '/gpu:1'
+gpu_train = '/gpu:1'
+gpu_test = '/gpu:0'
 # TODO: output the results to file "results.csv" and compute the confusion matrix
 
 flags = tf.app.flags
@@ -21,13 +20,13 @@ CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
 CLASS_COUNT = len(CLASS_LIST)
 
 flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
-flags.DEFINE_string('pretrain_path', './pretrained/resnet_v1_{}.ckpt', '')
+flags.DEFINE_string('official_model_path', './officialmodels/resnet_v1_{}.ckpt', '')
 flags.DEFINE_string('data_dir', './datasets/separate_relabel/', '')
 flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
                     'Save user models and logs, ends with 1.unpre/pre* 2.optimizer 3.loss type')
 flags.DEFINE_string('model_name', 'resnet.model', 'model name')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
-flags.DEFINE_string('losstype', 'cross_entropy', 'Either ordinal or cross_entropy')
+flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
 flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
 flags.DEFINE_integer('epoch', 5, 'Count of epoch')
 flags.DEFINE_boolean('fullytrain', True, 'Train all images in dataset')
@@ -35,12 +34,26 @@ flags.DEFINE_integer('loops', 10000, 'Number of iteration in training, only work
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
 flags.DEFINE_boolean('is_training', False, 'Train or evaluate?')
-flags.DEFINE_boolean('pretrained', False,
-                     'Whether using the pretrained model given by TensorFlow or not')
-flags.DEFINE_boolean('use_last_model', True,
-                     'Whether using the last model trained by ourselves or not. '
-                     'Only works when \'pretrained\' is False')
+flags.DEFINE_boolean('test_after_train',True,'Test the model on validation dataset after train')
+flags.DEFINE_string('model_to_load', 'last',
+                    "Which pretrained model to use, choose from 'offical','last','none'")
+
 FLAGS = flags.FLAGS
+
+
+def processBar(num, total, msg='', length=50):
+    rate = num / total
+    rate_num = int(rate * 100)
+    clth = int(rate * length)
+    if len(msg) > 0:
+        msg += ':'
+    if rate_num == 100:
+        r = '\r%s[%s%d%%]\n' % (msg, '*' * length, rate_num,)
+    else:
+        r = '\r%s[%s%s%d%%]' % (msg, '*' * clth, '-' * (length - clth), rate_num,)
+    sys.stdout.write(r)
+    sys.stdout.flush
+    return r.replace('\r', ':')
 
 
 def _get_session_config():
@@ -57,7 +70,7 @@ def _get_save_dir(flags):
         mtype = 'pre' + str(flags.resnet_model)
     else:
         mtype = 'unpre' + str(flags.resnet_model)
-    dir = flags.save_dir.format(mtype, flags.optimizer, flags.losstype)
+    dir = flags.save_dir.format(mtype, flags.optimizer, flags.loss_type)
     dir = os.path.abspath(dir)
     basedir, name = os.path.split(dir)
     try:
@@ -251,99 +264,15 @@ class Confusion(object):
         return tabulate(matrix, headers=self.headers, tablefmt='grid')
 
 
-def train(sess, optim, loss, summaries, loop, global_step=tf.Variable(0, False),
-          predct=None, labels=None, accuracy=None, logiter=20, ):
-    def _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val):
-        sum_str, lossval = sess.run([summaries, loss])
-        if predct != None and labels != None and accuracy != None:
-            predval, ys, accval = sess.run([predct, labels, accuracy])
-            cf = Confusion(predictions=predval, labels=ys)
-            msg = '[*]step:{}  accuracy:{}  Confusion Matrix:\n{}'.format(step_val, accval, cf)
-            print(msg)
-            logging.info(msg)
-        writer.add_summary(sum_str, step_val)
-        return lossval
-
-    time_begin = datetime.now()
-    savedir = _get_save_dir(FLAGS)
-    if not os.path.exists(savedir):
-        os.makedirs(savedir)
-    suffix = str(int(time()))
-    writer = tf.summary.FileWriter(savedir, sess.graph, filename_suffix=suffix)
-    logging.basicConfig(filename=os.path.join(savedir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
-    for it in range(loop):
-        try:
-            _, step_val = sess.run([optim, global_step])
-            if it % logiter == 0:
-                lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
-                time_elapse = datetime.now() - time_begin
-                time_remain = time_elapse / (it + 1) * (loop - it - 1)
-                msg = 'elapsed time:{} remaining time:{} iteration:{}/{} loss:{}'. \
-                    format(time_elapse, time_remain, it, loop, lossval)
-                print(msg)
-                logging.info(msg)
-                if lossval < 1.5:
-                    save(sess, os.path.join(savedir, 'tmp_loss{:.3f}'.format(lossval) + FLAGS.model_name), step_val)
-        except tf.errors.InvalidArgumentError as e:
-            print('An error of type tf.errors.InvalidArgumentError has been ignored...')
-            print(e.message)
-            logging.error('tf.errors.InvalidArgumentError:\r\n' + e.message)
-            continue
-        except tf.errors.OutOfRangeError:
-            lossval = _get_loss_log_summary(sess, loss, summaries, predct, labels, writer, step_val)
-            msg = '[*]Epoch reach the end, final loss value is {}'.format(lossval)
-            print(msg)
-            logging.info(msg)
-            break
-    time_elapse = datetime.now() - time_begin
-    print('Training finish, elapsed time %s...Trying to save the model...' % time_elapse)
-    save(sess, os.path.join(savedir, FLAGS.model_name), step_val)
-
-
-def evaluate(sess, probabilities, labels, loop=1000, logiter=50):
-    cnt = 0;
-    accsum = 0.0
-    suffix = int(time())
-    logpath = os.path.join(_get_save_dir(FLAGS), 'evaluate.output-{}.txt'.format(suffix))
-    logging.basicConfig(filename=logpath, level=logging.DEBUG)
-    cf = Confusion(headers=['A', 'B', 'C', 'D', 'E', '*'])
-    with tf.device(gpu_evl):
-        prediction = tf.argmax(probabilities, axis=-1)
-        accuracy, acc_update = tf.metrics.accuracy(labels, prediction)
-        sess.run(tf.local_variables_initializer())
-        while cnt < loop:
-            cnt += 1
-            try:
-                accval, acc_up, probsval, predval, ys = sess.run(
-                    [accuracy, acc_update, probabilities, prediction, labels])
-                accsum = accsum + accval
-                cf.add_data(predval, ys)
-                if cnt % logiter == 0:
-                    msg = 'iteration: {}/{}  accuracy: {}\r\nconfusion matrix:\r\n{}'.format(cnt, loop, accval, cf)
-                    print(msg)
-                    #print('pre:{}\nlable:{}'.format(predval, ys))
-                    logging.info(msg)
-            except tf.errors.InvalidArgumentError:
-                print('An error of type tf.errors.InvalidArgumentError has been ignored...')
-                logging.error('tf.errors.InvalidArgumentError')
-                continue
-            except tf.errors.OutOfRangeError:
-                print('Dataset reach the end.')
-                break
-            except tf.errors.NotFoundError:
-                break
-    return accsum / cnt
-
-
-def init_loss(logits, labels, end_points=None, losstype='ordinal'):
-    with tf.device(gpu_opt):
-        if losstype == 'cross_entropy':
+def init_loss(logits, labels, loss_type='ordinal'):
+    with tf.device(gpu_train):
+        if loss_type == 'cross_entropy':
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
             loss = tf.reduce_mean(loss)
             reg = tf.contrib.layers.apply_regularization(tf.contrib.layers.l2_regularizer(FLAGS.regularize_scale),
                                                          tf.trainable_variables())
             loss += reg
-        elif losstype == 'ordinal':
+        elif loss_type == 'ordinal':
             # ToDO: these codes below can`t get a valid loss value
             import math
             ks = [np.arange(1, 7).astype(np.float32)[None, :] \
@@ -366,19 +295,95 @@ def init_loss(logits, labels, end_points=None, losstype='ordinal'):
         return loss
 
 
+def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logiter):
+    '''
+    Main function to train the resnet
+    :param sess: tensorflow session
+    :param train_op: tensor operation
+    :param loss_t: tensor operation, loss function that trains every iteration
+    :param summary_t: tensor operation
+    :param global_step_t: tensor operation
+    :param loops: int
+    :param savedir: string
+    :param logiter: int, log the summaries after each 'logiter' iterations
+    :return:
+    '''
+    time_begin = datetime.now()
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+    suffix = str(int(time()))
+    writer = tf.summary.FileWriter(savedir, sess.graph, filename_suffix=suffix)
+    logging.basicConfig(filename=os.path.join(savedir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
+    for it in range(loops):
+        try:
+            sess.run(train_op)  # main train step
+            if it % logiter == 0:  # log summaries
+                loss_val, sum_str, step_val, = sess.run([loss_t, summary_t, global_step_t, ])
+                writer.add_summary(sum_str, step_val)
+                time_elapse = datetime.now() - time_begin
+                time_remain = time_elapse / (it + 1) * (loops - it - 1)
+                msg = '[*]elapsed time:{} remaining time:{} step:{} loss:{}'. \
+                    format(time_elapse, time_remain, step_val, loss_val)
+                logmsg = processBar(it, loops, msg, 50)
+                logging.info(logmsg)
+                if loss_val < 1.5:
+                    save(sess, os.path.join(savedir, 'tmp_loss{:.3f}'.format(loss_val) + FLAGS.model_name), step_val)
+        except tf.errors.InvalidArgumentError as e:
+            print('An error of type tf.errors.InvalidArgumentError has been ignored...')
+            print(e.message)
+            logging.error('tf.errors.InvalidArgumentError:\r\n' + e.message)
+            continue
+        except tf.errors.OutOfRangeError:
+            loss_val, sum_str, step_val, = sess.run([loss_t, summary_t, global_step_t, ])
+            writer.add_summary(sum_str, step_val)
+            msg = 'Epoch reach the end, final loss value is {}'.format(loss_val)
+            logmsg = processBar(it, loops, msg, 50)
+            logging.info(logmsg)
+            break
+    time_elapse = datetime.now() - time_begin
+    print('Training finish, elapsed time %s' % time_elapse)
+    return step_val
+
+
+def evaluate(sess, acc_t, probs_t, labels_t, summary_t, loops, logiter, savedir):
+    accuracies = []
+    suffix = int(time())
+    logpath = os.path.join(savedir, 'evaluate.output-{}.txt'.format(suffix))
+    logging.basicConfig(filename=logpath, level=logging.DEBUG)
+    writer = tf.summary.FileWriter(savedir, sess.graph, filename_suffix=suffix)
+    cf = Confusion(headers=['A', 'B', 'C', 'D', 'E', '*'])
+    predict_t = tf.argmax(probs_t, axis=-1)
+    sess.run(tf.local_variables_initializer())
+    for it in range(loops):
+        try:
+            accuracy, predictions, labels, sum_str = sess.run(
+                [acc_t, predict_t, labels_t, summary_t])
+            accuracies.append(accuracy)
+            cf.add_data(predictions, labels)
+            if it % logiter == 0:
+                msg = 'iteration: {}/{}  accuracy: {}\r\nconfusion matrix:\r\n{}'.format(it, loops, accuracy, cf)
+                print(msg)
+                logging.info(msg)
+                writer.add_summary(sum_str, it)
+        except tf.errors.InvalidArgumentError as e:
+            print('An error of type tf.errors.InvalidArgumentError accrue:')
+            print(e.message)
+            logging.error('tf.errors.InvalidArgumentError:\n%s' % e.message)
+            continue
+        except tf.errors.OutOfRangeError:
+            print('Dataset reach the end.')
+            break
+        except tf.errors.NotFoundError:
+            break
+    return accuracies
+
+
 def main(_):
     reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'validation')
                                          , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True)
     batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
     # param batch_xs: shape [batch_size, 32, 32, 3] type tf.float32
     # param batch_ys: shape [batch_size] type tf.int32
-
-    # off_hs = [0, 0, 32, 32, 64, 64, 96, 96]
-    # off_ws = [0, 32, 0, 32, 0, 32, 0, 32]
-    # x_img_cuts = [tf.image.crop_to_bounding_box(batch_xs, hs, ws, 32, 32) \
-    #               for hs, ws in zip(off_hs, off_ws)]
-    # batch_xs = tf.reshape(tf.concat(x_img_cuts, axis=0), [-1, 32, 32, 3])  # shape [batch_size * 8, 32, 32, 3]
-    # batch_ys = tf.reshape(batch_ys, [-1])  # shape [batch_size * 8]
 
     config = _get_session_config()
     sess = tf.InteractiveSession(config=config)
@@ -396,81 +401,87 @@ def main(_):
             raise NotImplementedError
 
     resnet = _get_resnet()
-
+    savedir = _get_save_dir(FLAGS)
     if FLAGS.is_training:
-        with slim.arg_scope(resnet_v1.resnet_arg_scope()):
-            with tf.device(gpu_net):
-                # param logits: shape [batch_size, CLASS_COUNT]
-                logits, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=True)
-                logits = tf.reshape(logits, [-1, CLASS_COUNT], name='logits_2d')
-                prediction = tf.argmax(logits, axis=-1, output_type=tf.int32)
-            with tf.device(gpu_evl):
-                mAP = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
-                loss = init_loss(logits, batch_ys, end_points=end_points, losstype=FLAGS.losstype)
-                mAP_sum = tf.summary.scalar('mAP', mAP)
-                loss_sum = tf.summary.scalar('loss', loss)
-                summaries = tf.summary.merge([mAP_sum, loss_sum])
-
-        step_num = 0
-        if FLAGS.pretrained:
-            # Load the pretrained model given by TensorFlow official
-            exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
-            resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
-            path = FLAGS.pretrain_path.format(FLAGS.resnet_model)
-            init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
-                                                     ignore_missing_vars=True)
-            init_fn(sess)
-            print('Pretrained model %s successfully loaded' % path)
-        elif FLAGS.use_last_model:
-            # Load the last model trained by ourselves
-            step_num = load_user_model(sess, _get_save_dir(FLAGS))
-
-        with tf.device(gpu_opt):
-            global_step = tf.Variable(step_num, trainable=False)
+        with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_train):
+            # param logits: shape [batch_size, CLASS_COUNT]
+            logits, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=True)
+            prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
+            loss_t = init_loss(logits, batch_ys, loss_type=FLAGS.loss_type)
+            mAP_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
+            # Load pretrained model
+            if FLAGS.model_to_load.lower() == 'last':
+                # Load the last model trained by ourselves
+                global_step_init_value = load_user_model(sess, savedir)
+            elif FLAGS.model_to_load.lower() == 'official':
+                # Load the pretrained model given by TensorFlow official
+                global_step_init_value = 0
+                exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
+                resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
+                path = FLAGS.official_model_path.format(FLAGS.resnet_model)
+                init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
+                                                         ignore_missing_vars=True)
+                init_fn(sess)
+                print('Pretrained model %s successfully loaded' % path)
+            elif FLAGS.model_to_load.lower() == 'none':
+                global_step_init_value = 0
+            global_step = tf.Variable(global_step_init_value, trainable=False, name='global_step')
+            # variable averages operation
+            variable_averages = tf.train.ExponentialMovingAverage(decay=0.99, num_updates=global_step)
+            variable_averages_op = variable_averages.apply(tf.trainable_variables())
             # Exponential decay learning rate and optimizer configurations
-            learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step, 100, 0.98, staircase=True)
-            if 'SGD' in FLAGS.optimizer:
-                optim = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step=global_step)
-            elif 'Adam' in FLAGS.optimizer:
-                optim = tf.train.AdamOptimizer(learning_rate).minimize(loss, global_step=global_step)
+            learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step, decay_steps=data_count,
+                                                       decay_rate=0.98, staircase=True, name='learning_rate')
+            if FLAGS.optimizer == 'SGD':
+                optim = tf.train.GradientDescentOptimizer(learning_rate)
+            elif FLAGS.optimizer == 'Adam':
+                optim = tf.train.AdamOptimizer(learning_rate)
             else:
                 raise NotImplementedError
-
-        # Ready to train
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-        sess.run(init_op)
-        loops = FLAGS.loops
-        if FLAGS.fullytrain:
-            loops = data_count
-        else:
-            loops = min(loops, data_count)
-        train(sess, optim, loss, summaries, loops, global_step, prediction, batch_ys, mAP)
-        print('Training finished')
-    else:  # Evaluate
-        with slim.arg_scope(resnet_v1.resnet_arg_scope()):
+            train_step = optim.minimize(loss_t, global_step=global_step, name=FLAGS.optimizer)
+            train_op = tf.group(train_step, variable_averages_op)
+            # Summaries log confugrations
+            mAP_log = tf.summary.scalar('mAP', mAP_t)
+            loss_log = tf.summary.scalar('loss', loss_t)
+            summaries = tf.summary.merge([mAP_log, loss_log])
+            # Init all variables
+            init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+            sess.run(init_op)
+            loops = data_count if FLAGS.fullytrain else min(FLAGS.loops, data_count)
+            # Ready to Train
+            final_step_val = train(sess, train_op, global_step, loss_t, summaries, savedir, loops, logiter=10)
+            print('Training finished, try to save the model...')
+            save(sess, os.path.join(savedir, FLAGS.model_name), final_step_val)
+            if FLAGS.test_after_train:
+                print('Prepare to test the model...')
+                # ToDO: finish this
+    if not FLAGS.is_training:  # Evaluate
+        with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_test):
             probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=False)
-            probs = tf.reshape(probs, [-1, CLASS_COUNT], name='probability')
-            # _, binary = init_loss(probs, batch_ys, end_points, losstype=FLAGS.losstype)
-        if FLAGS.pretrained:
-            # Load the pretrained model given by TensorFlow official
-            exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
-            resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
-            path = FLAGS.pretrain_path.format(FLAGS.resnet_model)
-            init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
-                                                     ignore_missing_vars=True)
-            init_fn(sess)
-            print('Pretrained model %s successfully loaded' % path)
-        elif FLAGS.use_last_model:
-            # Load the last model trained by ourselves
-            load_user_model(sess, _get_save_dir(FLAGS))
-        else:
-            raise NotImplementedError
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-        sess.run(init_op)
-        # TODO: Consider the binary classification...
-        # which is even more tricky to be implemented...
-        accsum_val = evaluate(sess, probabilities=probs, labels=batch_ys)
-        print('The model accuracy is {}'.format(accsum_val))
+            # probs = tf.reshape(probs, [-1, CLASS_COUNT], name='probability')
+            prediction = tf.argmax(probs, axis=-1, output_type=tf.int32, name='prediction')
+            acc_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
+            summary_t = tf.summary.scalar('accuracy', acc_t)
+            init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+            sess.run(init_op)
+            # Load pretrained model
+            if FLAGS.model_to_load.lower() == 'last':
+                # Load the last model trained by ourselves
+                load_user_model(sess, savedir)
+            elif FLAGS.model_to_load.lower() == 'official':
+                # Load the pretrained model given by TensorFlow official
+                exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
+                resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
+                path = FLAGS.official_model_path.format(FLAGS.resnet_model)
+                init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
+                                                         ignore_missing_vars=True)
+                init_fn(sess)
+                print('Pretrained model %s successfully loaded' % path)
+            elif FLAGS.model_to_load.lower() == 'none':
+                pass
+            savedir = os.path.join(savedir, 'test')
+            accuracies = evaluate(sess, acc_t, probs, batch_ys, summary_t, savedir, loops=data_count, logiter=10)
+            print('The model accuracy is {}'.format(sum(accuracies) / len(accuracies)))
 
 
 if __name__ == '__main__':
