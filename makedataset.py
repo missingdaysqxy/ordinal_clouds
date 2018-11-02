@@ -14,9 +14,9 @@ import logging
 import os
 import sys
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'  # 可以使用的GPU
-INPUT_DIR = './datasets/separate_relabel/'
-OUTPUT_DIR = './datasets/'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # 可以使用的GPU
+INPUT_DIR = './datasets/mode_2003/'
+OUTPUT_DIR = './datasets/separate_relabel2/'
 OUTPUT_CHANNEL = 3
 IMG_RESIZE = [512, 512]
 CUT_NUM = [4, 2]
@@ -77,60 +77,60 @@ def _cut_images(image_to_cut, img_resize=[64, 64], cut_num=[2, 2], cut_order='ho
     return x_img_cuts
 
 
-def init_csv_reader(input_dir, is_train, start_index=None, max_count=None, channels=3):
-    '''read records from .csv file and separate original images into 8 small images'''
-    assert channels in [1, 3]
-
-    def _parse_function(file_paths, labels):
-        '''Decode images and devide into 8 small images
-        :param file_paths: shape[]
-        :param labels: shape[8]
-        '''
-        batch_size = CUT_NUM[0] * CUT_NUM[1]
-        x_img_str = tf.read_file(file_paths)  # shape[]
-        x_img_decoded = tf.image.decode_jpeg(x_img_str, channels=channels)  # shape[?,?,channels]
-        batch_xs = _cut_images(x_img_decoded, IMG_RESIZE, CUT_NUM, 'horizontal')
-        batch_ys = tf.reshape(tf.split(labels, batch_size, axis=0), [-1, 1], name='batch_ys')  # shape[batch_size,1]
-        return file_paths, batch_xs, batch_ys
-
-    # Processing the image filenames
-    fs = os.listdir(input_dir)
-    csv_name = os.path.join(input_dir, [it for it in fs if '.csv' in it][0])
-
-    frame = pd.read_csv(csv_name)
-
-    # Add one more column named "Train" to split the training set and validation set
-    if is_train:
-        frame = frame.loc[frame['Train'] == 'T']
-        if isinstance(start_index, int) and start_index > 0:
-            frame = frame[start_index:]
-        if isinstance(max_count, int) and max_count > 0:
-            frame = frame[:max_count]
-        print(' [*] {} images initialized as training data'.format(frame['num_id'].count()))
-    else:
-        frame = frame.loc[frame['Train'] == 'F']
-        if isinstance(start_index, int) and start_index > 0:
-            frame = frame[start_index:]
-        if isinstance(max_count, int) and max_count > 0:
-            frame = frame[:max_count]
-        print(' [*] {} images initialized as validation data'.format(frame['num_id'].count()))
-    count = frame['num_id'].count()
-
-    num_idx = frame['num_id'].values.astype(str).tolist()
-    t_names = [item + '.jpg' for item in num_idx]
-    file_names = [os.path.join(input_dir, item) for item in t_names]
-    labels = frame['Cloud_Cover'].values.tolist()
-    t_labels = [list('F'.join(item.split('*'))) for item in labels]
-    for it in range(len(t_labels)):
-        t_labels[it] = list(map(lambda x: ord(x) - ord('A'), t_labels[it]))
-    # Initialize as a tensorflow tensor object
-    data = tf.data.Dataset.from_tensor_slices((tf.constant(file_names, name='file_names'),
-                                               tf.constant(t_labels)))
-    data = data.map(_parse_function)
-    return data, count
-
 
 def init_separate_dataset(tag='train', start_index=None, max_count=None, datatype='jpg'):
+    def init_csv_reader(input_dir, is_train, start_index=None, max_count=None, channels=3):
+        '''read records from .csv file and separate original images into 8 small images'''
+        assert channels in [1, 3]
+
+        def _parse_function(file_paths, labels):
+            '''Decode images and devide into 8 small images
+            :param file_paths: shape[]
+            :param labels: shape[8]
+            '''
+            batch_size = CUT_NUM[0] * CUT_NUM[1]
+            x_img_str = tf.read_file(file_paths)  # shape[]
+            x_img_decoded = tf.image.decode_jpeg(x_img_str, channels=channels)  # shape[?,?,channels]
+            batch_xs = _cut_images(x_img_decoded, IMG_RESIZE, CUT_NUM, 'horizontal')
+            batch_ys = tf.reshape(tf.split(labels, batch_size, axis=0), [-1, 1], name='batch_ys')  # shape[batch_size,1]
+            return file_paths, batch_xs, batch_ys
+
+        # Processing the image filenames
+        fs = os.listdir(input_dir)
+        csv_name = os.path.join(input_dir, [it for it in fs if '.csv' in it][0])
+
+        frame = pd.read_csv(csv_name)
+
+        # Add one more column named "Train" to split the training set and validation set
+        if is_train:
+            frame = frame.loc[frame['Train'] == 'T']
+            if isinstance(start_index, int) and start_index > 0:
+                frame = frame[start_index:]
+            if isinstance(max_count, int) and max_count > 0:
+                frame = frame[:max_count]
+            print(' [*] {} images initialized as training data'.format(frame['num_id'].count()))
+        else:
+            frame = frame.loc[frame['Train'] == 'F']
+            if isinstance(start_index, int) and start_index > 0:
+                frame = frame[start_index:]
+            if isinstance(max_count, int) and max_count > 0:
+                frame = frame[:max_count]
+            print(' [*] {} images initialized as validation data'.format(frame['num_id'].count()))
+        count = frame['num_id'].count()
+
+        num_idx = frame['num_id'].values.astype(str).tolist()
+        t_names = [item + '.jpg' for item in num_idx]
+        file_names = [os.path.join(input_dir, item) for item in t_names]
+        labels = frame['Cloud_Cover'].values.tolist()
+        t_labels = [list('F'.join(item.split('*'))) for item in labels]
+        for it in range(len(t_labels)):
+            t_labels[it] = list(map(lambda x: ord(x) - ord('A'), t_labels[it]))
+        # Initialize as a tensorflow tensor object
+        data = tf.data.Dataset.from_tensor_slices((tf.constant(file_names, name='file_names'),
+                                                   tf.constant(t_labels)))
+        data = data.map(_parse_function)
+        return data, count
+
     assert tag in ['train', 'validation']
     assert datatype in ['jpg', 'jpeg', 'png']
 
@@ -183,60 +183,6 @@ def init_separate_dataset(tag='train', start_index=None, max_count=None, datatyp
                 pass
 
 
-def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=False):
-    assert channels in [1, 3]
-    resize = img_resize is not None and type(img_resize) in [list, np.ndarray] and len(img_resize) == 2
-
-    def _parse_function(file_path, label):
-        '''Decode image
-        :param file_path: shape[]
-        :param label: shape[]
-        :return a string of image file path, a tensor of image, a label string of image
-        '''
-        x_img_str = tf.read_file(file_path)  # shape[]
-        x_img = tf.image.decode_jpeg(x_img_str, channels=channels)  # shape[?,?,channels]
-        if resize:
-            x_img = tf.image.resize_images(x_img, size=img_resize,
-                                           method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
-        if shuffle:  # 随机亮度对比度色相翻转
-            # ToDO: all images do with these
-            x_img = tf.image.random_brightness(x_img, max_delta=0.25)
-            x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
-            # x_img = tf.image.random_hue(x_img, max_delta=0.5)
-            x_img = tf.image.random_flip_up_down(x_img)
-            x_img = tf.image.random_flip_left_right(x_img)
-        return file_path, x_img, label
-
-    files = []
-    labels = []
-    for cls in class_list:
-        dir = os.path.join(input_dir, cls)
-        if not os.path.exists(dir):
-            print('path %s not exist' % dir)
-            continue
-        fs = os.listdir(dir)
-        fs = [os.path.join(dir, item) for item in fs]
-        files.extend(fs)
-        labels.extend([cls] * len(fs))
-    count = len(files)
-    if shuffle:
-        import random
-        idx = list(range(count))
-        random.shuffle(idx)
-        sfl_files = []
-        sfl_labels = []
-        for i in idx:
-            sfl_files.append(files[i])
-            sfl_labels.append(labels[i])
-        files = sfl_files
-        labels = sfl_labels
-    # Initialize as a tensorflow tensor object
-    data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
-                                               tf.constant(labels, name='label')))
-    data = data.map(_parse_function)
-    # if shuffle:
-    #     data = data.shuffle(count)
-    return data, count
 
 
 def tfrecord_reader(filepaths, batch_size=24, num_epochs=1):
@@ -304,6 +250,61 @@ def check_tfrecord():
 
 
 def init_binary_dataset(save_name, tag, datatype, shuffle):
+    def init_img_reader(input_dir, class_list, img_resize=None, channels=3, shuffle=False):
+        assert channels in [1, 3]
+        resize = img_resize is not None and type(img_resize) in [list, np.ndarray] and len(img_resize) == 2
+
+        def _parse_function(file_path, label):
+            '''Decode image
+            :param file_path: shape[]
+            :param label: shape[]
+            :return a string of image file path, a tensor of image, a label string of image
+            '''
+            x_img_str = tf.read_file(file_path)  # shape[]
+            x_img = tf.image.decode_jpeg(x_img_str, channels=channels)  # shape[?,?,channels]
+            if resize:
+                x_img = tf.image.resize_images(x_img, size=img_resize,
+                                               method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
+            if shuffle:  # 随机亮度对比度色相翻转
+                # ToDO: all images do with these
+                x_img = tf.image.random_brightness(x_img, max_delta=0.25)
+                x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
+                # x_img = tf.image.random_hue(x_img, max_delta=0.5)
+                x_img = tf.image.random_flip_up_down(x_img)
+                x_img = tf.image.random_flip_left_right(x_img)
+            return file_path, x_img, label
+
+        files = []
+        labels = []
+        for cls in class_list:
+            dir = os.path.join(input_dir, cls)
+            if not os.path.exists(dir):
+                print('path %s not exist' % dir)
+                continue
+            fs = os.listdir(dir)
+            fs = [os.path.join(dir, item) for item in fs]
+            files.extend(fs)
+            labels.extend([cls] * len(fs))
+        count = len(files)
+        if shuffle:
+            import random
+            idx = list(range(count))
+            random.shuffle(idx)
+            sfl_files = []
+            sfl_labels = []
+            for i in idx:
+                sfl_files.append(files[i])
+                sfl_labels.append(labels[i])
+            files = sfl_files
+            labels = sfl_labels
+        # Initialize as a tensorflow tensor object
+        data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
+                                                   tf.constant(labels, name='label')))
+        data = data.map(_parse_function)
+        # if shuffle:
+        #     data = data.shuffle(count)
+        return data, count
+
     assert tag in ['train', 'validation']
     assert datatype in ['tfrecord', 'json', 'h5']
 
@@ -375,9 +376,9 @@ def main():
         init_binary_dataset(save_name='clouds', tag='validation', datatype='tfrecord', shuffle=True)
 
     begintime = datetime.now()
-    # _make_separate_dataset()
+    _make_separate_dataset()
     # _make_tfrecord_dataset()
-    check_tfrecord()
+    # check_tfrecord()
     endtime = datetime.now()
     print('All dataset initialized!  Span Time:%s' % (endtime - begintime))
 

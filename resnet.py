@@ -9,14 +9,14 @@ from time import time
 from tabulate import tabulate
 import logging
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'  # 可以使用的GPU
-gpu_train = '/gpu:1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'  # 可以使用的GPU
+gpu_train = '/gpu:0'
 gpu_test = '/gpu:0'
 # TODO: output the results to file "results.csv" and compute the confusion matrix
 
 flags = tf.app.flags
 ERROR_FLAG = 0
-CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
+CLASS_LIST = ['A', 'B', 'C', 'D', 'E','nodata']
 CLASS_COUNT = len(CLASS_LIST)
 
 flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
@@ -30,15 +30,17 @@ flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
 flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
 flags.DEFINE_integer('epoch', 1, 'Count of epoch, if zero, the dataset will be empty')
-flags.DEFINE_boolean('loop_all', True, 'Train all images in dataset')
-flags.DEFINE_integer('loops', 10000, 'Number of iterations, only works when loop_all is False. '
-                                     'Note: it will be modified when the data count is less')
+flags.DEFINE_integer('loops', 500, 'Number of iterations, only works when loop_all is False. '
+                                   'Note: it will be modified when the data count is less')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
+flags.DEFINE_boolean('random_adjust', False, 'Randomly adjust the brightness, contrast and flip with dataset')
+flags.DEFINE_boolean('loop_all', True, 'Train all images in dataset')
 flags.DEFINE_boolean('is_training', False, 'Train or evaluate?')
-flags.DEFINE_boolean('test_after_train', True, 'Test the model on validation dataset after train')
+flags.DEFINE_boolean('auto_save', False, 'Auto save the model when loss value is small enough')
+flags.DEFINE_boolean('test_after_train', False, 'Test the model on validation dataset after train')
 flags.DEFINE_string('model_to_load', 'last',
-                    "Which pretrained model to use, choose from 'pretrained','last','none'")
+                    "Which pretrained model to use, choose from 'pretrained','last','new'")
 
 FLAGS = flags.FLAGS
 
@@ -68,7 +70,7 @@ def _checkflags(flags):
     assert flags.loops >= 0
     assert flags.learning_rate > 0
     assert flags.regularize_scale > 0
-    assert flags.model_to_load in ['pretrained', 'last', 'none']
+    assert flags.model_to_load in ['pretrained', 'last', 'new']
     print(flags)
 
 
@@ -79,6 +81,7 @@ def _get_session_config():
     config.gpu_options.allow_growth = True
     # config.gpu_options.per_process_gpu_memory_fraction  = 0.5
     return config
+
 
 def _get_save_dir(flags):
     if flags.model_to_load == 'pretrained':
@@ -109,22 +112,6 @@ def save(sess, model_path, counter):
         os.makedirs(save_dir)
     save_path = saver.save(sess, model_path, global_step=counter)
     return save_path
-
-
-def load_user_model(sess, model_dir):
-    import re
-    print('-[*] Load last model in {}'.format(model_dir))
-    ckpt = tf.train.get_checkpoint_state(model_dir)
-    saver = tf.train.Saver()
-    if ckpt and ckpt.model_checkpoint_path:
-        ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-        saver.restore(sess, os.path.join(model_dir, ckpt_name))
-        counter = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
-        print("-[*] Success to read {}".format(ckpt_name))
-        return counter
-    else:
-        print("-[*] No checkpoint files were found")
-        return ERROR_FLAG
 
 
 def init_csv_reader(path, batch_size, epoch, is_training):
@@ -176,7 +163,7 @@ def init_csv_reader(path, batch_size, epoch, is_training):
         return data.batch(batch_size), count
 
 
-def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, channels=3, shuffle=False):
+def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, channels=3, shuffle=True, adjust=False):
     '''
 
     :param input_dir:
@@ -205,16 +192,17 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         if resize:
             x_img = tf.image.resize_images(x_img, size=img_resize,
                                            method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
-        # if shuffle:  # 随机亮度对比度色相翻转
-        #     x_img = tf.image.random_brightness(x_img, max_delta=0.25)
-        #     x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
-        #     # x_img = tf.image.random_hue(x_img, max_delta=0.5)
-        #     x_img = tf.image.random_flip_up_down(x_img)
-        #     x_img = tf.image.random_flip_left_right(x_img)
+        if adjust:  # 随机亮度、对比度与翻转
+            x_img = tf.image.random_brightness(x_img, max_delta=0.25)
+            x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
+            # x_img = tf.image.random_hue(x_img, max_delta=0.5)
+            x_img = tf.image.random_flip_up_down(x_img)
+            x_img = tf.image.random_flip_left_right(x_img)
         return x_img, label
 
     files = []
     labels = []
+    cloudcover = [0.0, 0.1, 0.25, 0.75, 1.0]
     for i in range(len(class_list)):
         dir = os.path.join(input_dir, class_list[i])
         if not os.path.exists(dir):
@@ -223,7 +211,10 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         fs = os.listdir(dir)
         fs = [os.path.join(dir, item) for item in fs]
         files.extend(fs)
-        labels.extend([i] * len(fs))
+        if FLAGS.loss_type == 'ordinal':
+            labels.extend([cloudcover[i]] * len(fs))
+        else:
+            labels.extend([i] * len(fs))
     count = len(files)
     assert count > batch_size
     if shuffle:
@@ -244,7 +235,7 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
     # Initialize as a tensorflow tensor object
     data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
                                                tf.constant(labels, name='label')))
-    data=data.repeat(epoch)
+    data = data.repeat(epoch)
     data = data.map(_parse_function)
     # if shuffle:
     #     data = data.shuffle(count)
@@ -279,7 +270,7 @@ class Confusion(object):
         return tabulate(matrix, headers=self.headers, tablefmt='grid')
 
 
-def init_loss(logits, labels, loss_type='ordinal'):
+def init_loss(logits, labels, end_points, loss_type='ordinal'):
     with tf.device(gpu_train):
         if loss_type == 'cross_entropy':
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
@@ -289,28 +280,45 @@ def init_loss(logits, labels, loss_type='ordinal'):
             loss += reg
         elif loss_type == 'ordinal':
             # ToDO: these codes below can`t get a valid loss value
-            import math
-            ks = [np.arange(1, 7).astype(np.float32)[None, :] \
-                  for _ in range(FLAGS.batch_size)]
-            ks = np.concatenate(ks, axis=0)
-            kfac = [[math.factorial(it) for it in range(1, 7)] for _ in range(FLAGS.batch_size)]
-            kfac = np.array(kfac, dtype=np.float32)
-            k_vector = tf.constant(ks, name='k_vector')
-            k_factor = tf.constant(kfac, name='k_factor')
-            softmaxed = tf.nn.softmax(logits, axis=-1, name='softmax')
-            log_exp = tf.log(softmaxed)
-            poisson = k_vector * log_exp - logits - tf.log(k_factor)
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=poisson)
-            loss = tf.reduce_mean(loss)
-            reg = tf.contrib.layers.apply_regularization(tf.contrib.layers.l2_regularizer(FLAGS.regularize_scale),
-                                                         tf.trainable_variables())
-            loss += reg
+            with tf.variable_scope('ordinal_loss'):
+                # 将原logits卷积成一个值
+                conv_1 = slim.conv2d(end_points['resnet_v1_{}/block4'.format(FLAGS.resnet_model)], 6, [3, 3],
+                                     scope='conv_1')
+                conv_2 = slim.conv2d(conv_1, 1, [3, 3], scope='conv_2')
+                reshaped = tf.reshape(conv_2, [FLAGS.batch_size, -1], name='reshaped')
+                # sigmoid到[0:1)区间
+                sigmoid = tf.nn.sigmoid(reshaped, name='sigmoid')
+                # 将groud truth归一化到[0:1)区间
+                # r_labels = tf.cast(tf.divide(labels ,CLASS_COUNT,name='groudtruth'),tf.float32)
+                # 计算sigmoid与groud truth的距离作为loss
+                loss = tf.square(sigmoid - labels)
+                loss = tf.reduce_mean(loss)
+                reg = tf.contrib.layers.apply_regularization(tf.contrib.layers.l2_regularizer(FLAGS.regularize_scale),
+                                                             tf.trainable_variables())
+                loss += reg
+            # import math
+            #
+            # ks = [np.arange(1, 7).astype(np.float32)[None, :] \
+            #       for _ in range(FLAGS.batch_size)]
+            # ks = np.concatenate(ks, axis=0)
+            # kfac = [[math.factorial(it) for it in range(1, 7)] for _ in range(FLAGS.batch_size)]
+            # kfac = np.array(kfac, dtype=np.float32)
+            # k_vector = tf.constant(ks, name='k_vector')
+            # k_factor = tf.constant(kfac, name='k_factor')
+            # softmaxed = tf.nn.softmax(logits, axis=-1, name='softmax')
+            # log_exp = tf.log(softmaxed)
+            # poisson = k_vector * log_exp - logits - tf.log(k_factor)
+            # loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=poisson)
+            # loss = tf.reduce_mean(loss)
+            # reg = tf.contrib.layers.apply_regularization(tf.contrib.layers.l2_regularizer(FLAGS.regularize_scale),
+            #                                              tf.trainable_variables())
+            # loss += reg
         else:
             raise NotImplementedError
         return loss
 
 
-def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logiter, save_limit=1.4):
+def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logiter, save_limit=1.2):
     '''
     Main function to train the resnet
     :param sess: tensorflow session
@@ -333,7 +341,8 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
     logging.basicConfig(filename=os.path.join(savedir, 'train.output-{}.txt'.format(suffix)), level=logging.DEBUG)
     for it in range(loops):
         try:
-            _, loss_val, sum_str, step_val, = sess.run([train_op, loss_t, summary_t, global_step_t, ])  # main train step
+            _, loss_val, sum_str, step_val, = sess.run(
+                [train_op, loss_t, summary_t, global_step_t, ])  # main train step
             if it % logiter == 0:  # log summaries
                 step_val -= 1  # As 'global_step_t' already increased after 'sess.run(train_op)', here we decrease 'step_val' by one
                 writer.add_summary(sum_str, step_val)
@@ -343,7 +352,7 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
                     format(time_elapse, time_remain, step_val, loss_val)
                 logmsg = processBar(it, loops, msg, 50)
                 logging.info(logmsg)
-                if loss_val < save_limit:
+                if loss_val < save_limit and FLAGS.auto_save:
                     save_limit = loss_val
                     save(sess, os.path.join(savedir, 'tmp_loss{:.3f}'.format(loss_val) + FLAGS.model_name), step_val)
         except tf.errors.InvalidArgumentError as e:
@@ -397,8 +406,9 @@ def evaluate(sess, acc_t, probs_t, labels_t, summary_t, savedir, loops, logiter)
 
 def main(_):
     _checkflags(FLAGS)
-    reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'validation')
-                                         , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True)
+    reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'train')
+                                         , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True,
+                                         adjust=FLAGS.random_adjust)
     batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
     # param batch_xs: shape [batch_size, 32, 32, 3] type tf.float32
     # param batch_ys: shape [batch_size] type tf.int32
@@ -421,9 +431,22 @@ def main(_):
     resnet = _get_resnet()
     savedir = _get_save_dir(FLAGS)
     os.makedirs(savedir, exist_ok=True)
-    confile=open(os.path.join(savedir,'flags.configs.txt'),mode='a',encoding='utf8')
+    confile = open(os.path.join(savedir, 'flags.configs.txt'), mode='a', encoding='utf8')
     confile.write(str(FLAGS))
     confile.close()
+
+    def load_user_model(sess, model_dir):
+        print('-[*] Load last model in {}'.format(model_dir))
+        ckpt = tf.train.get_checkpoint_state(model_dir)
+        saver = tf.train.Saver()
+        if ckpt and ckpt.model_checkpoint_path:
+            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+            saver.restore(sess, os.path.join(model_dir, ckpt_name))
+            print("-[*] Success to read {}".format(ckpt_name))
+        else:
+            print("-[*] No checkpoint files were found")
+            return ERROR_FLAG
+
     if FLAGS.is_training:
         print('[*]Training logs and models will be saved into %s' % os.path.abspath(savedir))
         with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_train):
@@ -431,24 +454,25 @@ def main(_):
             logits, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, is_training=True)
             logits = tf.squeeze(logits, name='probability')
             prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
-            loss_t = init_loss(logits, batch_ys, loss_type=FLAGS.loss_type)
+            # prediction = tf.cast(prediction, tf.float32)
+            loss_t = init_loss(logits, batch_ys, end_points, loss_type=FLAGS.loss_type)
             mAP_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
-            # Load pretrained model
-            if FLAGS.model_to_load.lower() == 'last':
-                # Load the last model trained by ourselves
-                global_step_init_value = load_user_model(sess, savedir)
-            elif FLAGS.model_to_load.lower() == 'pretrained':
-                # Load the model pretrained by TensorFlow official
-                global_step_init_value = 0
-                exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
-                resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
-                path = FLAGS.official_model_path.format(FLAGS.resnet_model)
-                init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
-                                                         ignore_missing_vars=True)
-                init_fn(sess)
-                print('[*]Pretrained model %s successfully loaded' % path)
-            elif FLAGS.model_to_load.lower() == 'none':
-                global_step_init_value = 0
+
+            def get_global_step_init_value(model_dir):
+                if FLAGS.model_to_load.lower() == 'last':
+                    import re
+                    print('-[*] Find last global step value in {}'.format(model_dir))
+                    ckpt = tf.train.get_checkpoint_state(model_dir)
+                    if ckpt and ckpt.model_checkpoint_path:
+                        ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+                        global_step_init_value = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
+                        print("-[*] The last global step value of {} is {}".format(ckpt_name, global_step_init_value))
+                else:
+                    # Load the model pretrained by TensorFlow official
+                    global_step_init_value = 0
+                return global_step_init_value
+
+            global_step_init_value = get_global_step_init_value(savedir)
             print('[*]Init global_step with value of %d' % global_step_init_value)
             global_step = tf.Variable(global_step_init_value, trainable=False, name='global_step')
             # variable averages operation
@@ -472,6 +496,21 @@ def main(_):
             # Init all variables
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
             sess.run(init_op)
+
+            # Load pretrained model
+            if FLAGS.model_to_load.lower() == 'last':
+                # Load the last model trained by ourselves
+                load_user_model(sess, savedir)
+            elif FLAGS.model_to_load.lower() == 'pretrained':
+                # Load the model pretrained by TensorFlow official
+                exclusions = ['resnet_v1_{}/logits'.format(FLAGS.resnet_model), 'predictions']
+                resnet_except_logits = slim.get_variables_to_restore(exclude=exclusions)
+                path = FLAGS.official_model_path.format(FLAGS.resnet_model)
+                init_fn = slim.assign_from_checkpoint_fn(path, resnet_except_logits,
+                                                         ignore_missing_vars=True)
+                init_fn(sess)
+                print('[*]Pretrained model %s successfully loaded' % path)
+
             loops = data_count if FLAGS.loop_all else min(FLAGS.loops, data_count)
             # Ready to Train
             final_step_val = train(sess, train_op, global_step, loss_t, summaries, savedir, loops, logiter=10)
@@ -486,7 +525,7 @@ def main(_):
                 # ToDO: finish this
     if not FLAGS.is_training:  # Evaluate
         with slim.arg_scope(resnet_v1.resnet_arg_scope()), tf.device(gpu_test):
-            probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT,)
+            probs, end_points = resnet(batch_xs, num_classes=CLASS_COUNT, )
             probs = tf.squeeze(probs, name='probability')
             prediction = tf.argmax(probs, axis=-1, output_type=tf.int32, name='prediction')
             acc_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
@@ -506,7 +545,7 @@ def main(_):
                                                          ignore_missing_vars=True)
                 init_fn(sess)
                 print('[*]Pretrained model %s successfully loaded' % path)
-            elif FLAGS.model_to_load.lower() == 'none':
+            elif FLAGS.model_to_load.lower() == 'new':
                 pass
             e_savedir = os.path.join(savedir, 'evaluate')
             print('[*]Evaluate logs and summaries will be saved into %s' % os.path.abspath(e_savedir))
