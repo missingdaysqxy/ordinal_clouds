@@ -29,6 +29,9 @@ class Config(object):
     # choose from 'SGD','ADAM'
     OPTIMIZER='SGD'
 
+    # initial value of learning rate
+    LEARNING_RATE=8e-3
+
     # whether use the L2 regularizer or not
     USE_REGULARIZER=True
 

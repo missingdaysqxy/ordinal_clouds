@@ -26,6 +26,7 @@ class resnet(object):
         self.resnet = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
         self._batch_xs = tf.placeholder(tf.float32)
         self.features, self.end_points = resnet(self._batch_xs, num_classes=self.num_classes)
+        self.initialized = False
 
     def _get_resnet(self, resnet_depth, version):
         assert version in ['v1', 'v2']
@@ -84,12 +85,27 @@ class resnet(object):
         return loss
 
     def load_weights(self, model_path):
+        def get_global_step_init_value(model_dir):
+            import re
+            # print('-[*] Find last global step value in {}'.format(model_dir))
+            ckpt = tf.train.get_checkpoint_state(model_dir)
+            if ckpt and ckpt.model_checkpoint_path:
+                ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+                global_step_init_value = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
+                # print("-[*] The last global step value of {} is {}".format(ckpt_name, global_step_init_value))
+            else:
+                # Load the model pretrained by TensorFlow official
+                global_step_init_value = 0
+            return global_step_init_value
+
+        self.global_step_init_value=get_global_step_init_value(model_path)
         if os.path.isdir(model_path):  # saver write_version=tf.train.SaverDef.V2
             pass
         elif os.path.isfile(model_path):  # saver write_version=tf.train.SaverDef.V1
             pass
         else:
             raise FileNotFoundError
+        self.initialized=True
 
     def find_last(self):
         """Find the lasted trained model in current configuration"""
@@ -102,8 +118,39 @@ class resnet(object):
             return None
 
     def initialize_weights(self):
+        self.global_step_init_value=0
         # ToDO: create new folder in ckpt dir
-        pass
+        self.initialized = True
+
+    def train(self,batch_xs,batch_ys,epochs=1):
+        assert self.initialized,'initialize_weights() or load_weights() must be called before call train()'
+        logits = tf.squeeze(self.features, name='probability')
+        prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
+        # Summaries log confugrations
+        loss_t = self._init_loss(logits, batch_ys)
+        mAP_t = tf.reduce_mean(tf.cast(tf.equal(prediction, batch_ys), dtype=tf.float32))
+        mAP_log = tf.summary.scalar('mAP', mAP_t)
+        loss_log = tf.summary.scalar('loss', loss_t)
+        summaries = tf.summary.merge([mAP_log, loss_log])
+        # global_steps
+        global_step=tf.get_variable('global_step',dtype=tf.int32,initializer=tf.constant_initializer(self.global_step_init_value),trainable=False)
+        # variable averages operation
+        variable_averages = tf.train.ExponentialMovingAverage(decay=0.99, num_updates=global_step)
+        variable_averages_op = variable_averages.apply(tf.trainable_variables())
+        # Exponential decay learning rate and optimizer configurations
+        learning_rate = tf.train.exponential_decay(self.config.LEARNING_RATE, global_step, decay_steps=100,
+                                                   decay_rate=0.98, staircase=True, name='learning_rate')
+        if self.config.OPTIMIZER == 'SGD':
+            optim = tf.train.GradientDescentOptimizer(learning_rate)
+        elif self.config.OPTIMIZER == 'Adam':
+            optim = tf.train.AdamOptimizer(learning_rate)
+        else:
+            raise NotImplementedError
+        train_step = optim.minimize(loss_t, global_step=global_step, name=self.config.OPTIMIZER)
+        train_op = tf.group(train_step, variable_averages_op)
+        # Init and Train
+        init_op = tf.group(global_step.initializer,learning_rate.initializer)
+        self.sess.run(init_op)
 
     def save(self, save_path, version=2):
         pass
