@@ -9,7 +9,19 @@ import  tensorflow as tf
 
 class Config(object):
 
-    #NUM_CLASSES=6
+    CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
+
+    NUM_CLASSES = len(CLASS_LIST)
+
+    # 1 for grayscale or 3 for rgb
+    IMG_CHANNEL = 3
+
+    # 'None' or a list as [height, width]
+    IMG_RESIZE = None
+
+    BATCH_SIZE = 256
+
+    SHUFFLE = True
 
     # loss function, choose from 'rmse', 'cross_entropy', 'ordinal'
     LOSS_TYPE='rmse'

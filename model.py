@@ -13,12 +13,8 @@ from .config import Config
 
 
 class resnet(object):
-    def __init__(self, num_classes):
-        self.num_classes = num_classes
-
-
-class regression_resnet(object):
     def __init__(self, mode, config, checkpoints_root_dir):
+        self.num_classes = config.NUM_CLASSES
         assert mode in ['train', 'evaluate', 'predict'], \
             "mode must choose one from 'train','evaluate' or 'predict'"
         assert isinstance(config, Config)
@@ -29,9 +25,7 @@ class regression_resnet(object):
         self.sess = tf.InteractiveSession(config=config.SessionConfig)
         self.resnet = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
         self._batch_xs = tf.placeholder(tf.float32)
-        # set the num_class to None for further regression
-        self.features, self.end_points = resnet(self._batch_xs, num_classes=None)
-        # ToDO : convolution/dense the features into one value presented for regression value
+        self.features, self.end_points = resnet(self._batch_xs, num_classes=self.num_classes)
 
     def _get_resnet(self, resnet_depth, version):
         assert version in ['v1', 'v2']
@@ -51,7 +45,7 @@ class regression_resnet(object):
         else:
             raise NotImplementedError
 
-    def _get_ckpt_dir(self, ckpt_root_dir, target='last',create=False):
+    def _get_ckpt_dir(self, ckpt_root_dir, target='last', create=False):
         """
         get or create the checkpoints files path with current configuration
         :param ckpt_root_dir: where to save or load the checkpoints files
@@ -82,13 +76,8 @@ class regression_resnet(object):
 
     def _init_loss(self, predicts, labels):
         loss_type = self.config.LOSS_TYPE.lower()
-        if loss_type is 'rmse':  # Root-Means-Squared-Error, 均方根误差，标准差
-            loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predicts, labels))))
-        elif loss_type is 'cross_entropy':
+        if loss_type is 'cross_entropy':
             loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=predicts)
-        elif loss_type is 'ordinal':
-            # ToDO
-            pass
         if self.config.USE_REGULARIZER:
             reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
             loss += layers.apply_regularization(reg, tf.trainable_variables())
@@ -119,11 +108,41 @@ class regression_resnet(object):
     def save(self, save_path, version=2):
         pass
 
-    def train(self, dataset, epochs=1):
+
+class regression_resnet(resnet):
+    def __init__(self, mode, config, checkpoints_root_dir):
+        assert mode in ['train', 'evaluate', 'predict'], \
+            "mode must choose one from 'train','evaluate' or 'predict'"
+        assert isinstance(config, Config)
+        assert os.path.isdir(checkpoints_root_dir)
+        self.mode = mode
+        self.config = config
+        self.ckpt_root_dir = checkpoints_root_dir
+        self.sess = tf.InteractiveSession(config=config.SessionConfig)
+        self.resnet = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
+        self._batch_xs = tf.placeholder(tf.float32)
+        # set the num_class to None for further regression
+        self.features, self.end_points = resnet(self._batch_xs, num_classes=None)
+        # ToDO : convolution/dense the features into one value presented for regression value
+
+    def _init_loss(self, predicts, labels):
+        loss_type = self.config.LOSS_TYPE.lower()
+        if loss_type is 'rmse':  # Root-Means-Squared-Error, 均方根误差，标准差
+            loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predicts, labels))))
+        elif loss_type is 'cross_entropy':
+            loss = super(predicts,labels)
+        elif loss_type is 'ordinal':
+            # ToDO
+            pass
+        if self.config.USE_REGULARIZER:
+            reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
+            loss += layers.apply_regularization(reg, tf.trainable_variables())
+        return loss
+    def train(self, batch_xs, batch_ys, epochs):
         assert self.mode is 'train'
-        self.ckpt_dir = self._get_ckpt_dir(self.ckpt_root_dir,target='new',create=True)
+        self.ckpt_dir = self._get_ckpt_dir(self.ckpt_root_dir, target='new', create=True)
         suffix = str(int(time()))
-        writer = tf.summary.FileWriter(self.ckpt_dir,self.sess.graph, filename_suffix=suffix)
+        writer = tf.summary.FileWriter(self.ckpt_dir, self.sess.graph, filename_suffix=suffix)
         logging.basicConfig(filename=os.path.join(self.ckpt_dir, 'train.output-{}.txt'.format(suffix)),
                             level=logging.DEBUG)
 
