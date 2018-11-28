@@ -11,7 +11,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import tensorflow as tf
 import numpy as np
-from .model import regression_resnet
+from .model import resnet, regression_resnet
 from .model import Config
 
 TRAIN_DATA_DIR = r'./datasets/separate_relabel2/train'
@@ -24,7 +24,7 @@ TRAIN_EPOCHS = 50
 PRE_MODEL = 'none'
 
 
-class InitDataset(object):
+class Dataset(object):
     def __init__(self, data_dir, config):
         self.config = config
         self.resize = config.IMG_RESIZE is not None and type(config.IMG_RESIZE) in [list, np.ndarray] and len(
@@ -80,24 +80,25 @@ class InitDataset(object):
             labels = sfl_labels
         if count % config.BATCH_SIZE > 0:
             count = count - count % config.BATCH_SIZE
-            # files = files[:count]
-            # labels = labels[:count]
+            # files = files[:batch_count]
+            # labels = labels[:batch_count]
         # Initialize as a tensorflow tensor object
         data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
                                                    tf.constant(labels, name='label')))
         data = data.map(_parse_function)
         self.data = data.batch(config.BATCH_SIZE).repeat()
-        self.count = count // config.BATCH_SIZE
+        self.batch_count = count // config.BATCH_SIZE
 
-    def __call__(self, *args, **kwargs):
+    def get_batch_pipeline(self):
         batch_xs, batch_ys, batch_org = self.data.make_one_shot_iterator().get_next()
         return batch_xs,batch_ys,batch_org
 
 
 def main():
     config = Config()
-    train_xs,train_ys,train_org = InitDataset(TRAIN_DATA_DIR, config, repeat=TRAIN_EPOCHS)
-    net = regression_resnet(mode='train', config=config, checkpoints_root_dir=CKPT_DIR)
+    train_data=Dataset(TRAIN_DATA_DIR, config, repeat=TRAIN_EPOCHS)
+    train_xs,train_ys,train_org = train_data.get_batch_pipeline()
+    net = resnet(mode='train', config=config, checkpoints_root_dir=CKPT_DIR)
     # Load Existed Models
     if PRE_MODEL == 'resnet':
         net.load_weights(PRETRAINED_MODEL_PATH)
@@ -106,11 +107,12 @@ def main():
     else:
         net.initialize_weights()
     # Train Model
-    net.train(train_xs,train_ys, epochs=TRAIN_EPOCHS)
+    net.train(train_xs, train_ys, train_data.batch_count)
     if not os.path.exists(MODEL_SAVE_DIR):
         os.makedirs(MODEL_SAVE_DIR)
     savepath = os.path.join(MODEL_SAVE_DIR, MODEL_SAVE_NAME)
     net.save(savepath)
     # Test Model
-    val_xs,val_ys,val_org = InitDataset(VAL_DATA_DIR)
+    val_data=Dataset(VAL_DATA_DIR)
+    val_xs,val_ys,val_org = val_data.get_batch_pipeline()
     net.test(val_xs,val_ys,val_org)

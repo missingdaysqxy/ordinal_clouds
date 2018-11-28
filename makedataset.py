@@ -170,7 +170,7 @@ def init_separate_dataset(tag='train', start_index=None, max_count=None, datatyp
                     im = Image.fromarray(imgs[i])
                     im.save(save_path)
                 if int(org_name) % perc == 0:
-                    # print('progress: {}/{}'.format(step, count))
+                    # print('progress: {}/{}'.format(step, batch_count))
                     processBar(step, count, msg="Initizing " + _output_dir)
                 step += 1
             except tf.errors.OutOfRangeError:
@@ -302,7 +302,7 @@ def init_binary_dataset(save_name, tag, datatype, shuffle):
                                                    tf.constant(labels, name='label')))
         data = data.map(_parse_function)
         # if shuffle:
-        #     data = data.shuffle(count)
+        #     data = data.shuffle(batch_count)
         return data, count
 
     assert tag in ['train', 'validation']

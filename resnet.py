@@ -19,7 +19,7 @@ ERROR_FLAG = 0
 CLASS_LIST = ['A', 'B', 'C', 'D', 'E','nodata']
 CLASS_COUNT = len(CLASS_LIST)
 
-flags.DEFINE_integer('resnet_model', 101, 'The layers count of resnet: 50, 101 or 152')
+flags.DEFINE_integer('resnet_model', 101, 'The layers batch_count of resnet: 50, 101 or 152')
 flags.DEFINE_string('official_model_path', './pretrained/resnet_v1_{}.ckpt',
                     'If \'model_to_load\' is \'pretrained\', then this file will be loaded as a pretrained model')
 flags.DEFINE_string('data_dir', './datasets/separate_relabel/', 'Where is the input data in')
@@ -28,10 +28,10 @@ flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
 flags.DEFINE_string('model_name', 'ordinal_clouds.ckpt', 'model name')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
-flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images count is 8 * batch_size')
+flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images batch_count is 8 * batch_size')
 flags.DEFINE_integer('epoch', 1, 'Count of epoch, if zero, the dataset will be empty')
 flags.DEFINE_integer('loops', 500, 'Number of iterations, only works when loop_all is False. '
-                                   'Note: it will be modified when the data count is less')
+                                   'Note: it will be modified when the data batch_count is less')
 flags.DEFINE_float('learning_rate', 8e-3, 'Initial learning rate')
 flags.DEFINE_float('regularize_scale', 1e-5, 'L2 regularizer scale')
 flags.DEFINE_boolean('random_adjust', False, 'Randomly adjust the brightness, contrast and flip with dataset')
@@ -121,7 +121,7 @@ def init_csv_reader(path, batch_size, epoch, is_training):
     :param batch_size:
     :param epoch:
     :param is_training:
-    :return: dataset, count
+    :return: dataset, batch_count
     '''
 
     def _parse_function(xs, ys):
@@ -230,15 +230,15 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         labels = sfl_labels
     if count % batch_size > 0:
         count = count - count % batch_size
-        # files = files[:count]
-        # labels = labels[:count]
+        # files = files[:batch_count]
+        # labels = labels[:batch_count]
     # Initialize as a tensorflow tensor object
     data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
                                                tf.constant(labels, name='label')))
     data = data.repeat(epoch)
     data = data.map(_parse_function)
     # if shuffle:
-    #     data = data.shuffle(count)
+    #     data = data.shuffle(batch_count)
     return data.batch(batch_size), count // batch_size * epoch
 
 

@@ -19,8 +19,16 @@ class Config(object):
     # 'None' or a list as [height, width]
     IMG_RESIZE = None
 
+    # batch_size
     BATCH_SIZE = 256
 
+    # epochs for training
+    TRAINING_EPOCH=1
+
+    # interval between two logs in tensorboard
+    LOG_INTERVAL=10
+
+    # shuffle the dataset or not
     SHUFFLE = True
 
     # loss function, choose from 'rmse', 'cross_entropy', 'ordinal'
@@ -57,6 +65,7 @@ class Config(object):
         assert self.LOSS_TYPE in ['rmse', 'cross_entropy', 'ordinal']
         assert self.RESNET_VERSION in ['v1','v2']
         assert self.RESNET_DEPTH in [50, 101, 152, 200]
+        assert type(self.TRAINING_EPOCH) is int and self.TRAINING_EPOCH > 0
         self.OPTIMIZER=self.OPTIMIZER.lower()
         assert self.OPTIMIZER in ['sgd','adam']
         self.SessionConfig = tf.ConfigProto()
