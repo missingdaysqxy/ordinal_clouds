@@ -57,8 +57,8 @@ class Config(object):
         assert self.LOSS_TYPE in ['rmse', 'cross_entropy', 'ordinal']
         assert self.RESNET_VERSION in ['v1','v2']
         assert self.RESNET_DEPTH in [50, 101, 152, 200]
-        self.OPTIMIZER=self.OPTIMIZER.upper()
-        assert self.OPTIMIZER in ['SGD','ADAM']
+        self.OPTIMIZER=self.OPTIMIZER.lower()
+        assert self.OPTIMIZER in ['sgd','adam']
         self.SessionConfig = tf.ConfigProto()
         self.SessionConfig.allow_soft_placement = self.TF_ALLOW_CPU
         self.SessionConfig.gpu_options.allow_growth =self. TF_GPU_GROWTH

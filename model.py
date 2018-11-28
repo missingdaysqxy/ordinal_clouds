@@ -22,6 +22,9 @@ class resnet(object):
         self.mode = mode
         self.config = config
         self.ckpt_root_dir = checkpoints_root_dir
+        self.ckpt_base_name == 'resnet{}_{}_{}_{}_'.format(
+            self.config.RESNET_DEPTH, self.config.RESNET_VERSION,
+            self.config.LOSS_TYPE, self.config.OPTIMIZER)
         self.sess = tf.InteractiveSession(config=config.SessionConfig)
         self.resnet = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
         self._batch_xs = tf.placeholder(tf.float32)
@@ -46,43 +49,53 @@ class resnet(object):
         else:
             raise NotImplementedError
 
-    def _get_ckpt_dir(self, ckpt_root_dir, target='last', create=False):
+    def _get_last_ckpt_folder(self, create_if_none=False):
         """
-        get or create the checkpoints files path with current configuration
-        :param ckpt_root_dir: where to save or load the checkpoints files
-        :param target: choose from 'last' to load the lasted trained model,
-         or 'new' to create a new folder to save new training model.
-         :param create: create new folder if the ckpt path does not exist.
-        :return: a path to the checkpoints files
+        Find the folder which stored the last checkpoint under current configuration
+        :param create_if_none: Create a new folder if there's no existed checkpoint folder
+        :return: a path to the checkpoint folder
         """
-        assert target in ['last', 'new']
-        ckpt_name = 'resnet{}_{}_{}_{}_'.format(
-            self.config.RESNET_DEPTH, self.config.RESNET_VERSION,
-            self.config.LOSS_TYPE, self.config.OPTIMIZER)
+        _ckpt_name = self.ckpt_name
         try:
-            list = os.listdir(ckpt_root_dir)
-            list = [s for s in list if s.startswith(ckpt_name)]
-            list = [s[len(ckpt_name):] for s in list]
+            list = os.listdir(self.ckpt_root_dir)
+            list = [s[len(_ckpt_name):] for s in list if s.startswith(_ckpt_name)]
             num = int(max(list))
         except:
-            num = 0
-        if target is 'last':
-            ckpt_name += str(num)
-        else:
-            ckpt_name += str(num + 1)
-        path = os.path.join(ckpt_root_dir, ckpt_name)
-        if create and not os.path.exists(path):
+            return None
+        _ckpt_name += str(num)
+        path = os.path.join(self.ckpt_root_dir, _ckpt_name)
+        if create_if_none and not os.path.exists(path):
             os.makedirs(path)
         return path
 
-    def _init_loss(self, predicts, labels):
-        loss_type = self.config.LOSS_TYPE.lower()
-        if loss_type is 'cross_entropy':
-            loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=predicts)
-        if self.config.USE_REGULARIZER:
-            reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
-            loss += layers.apply_regularization(reg, tf.trainable_variables())
-        return loss
+    def _create_new_ckpt_folder(self, makedir=True):
+        '''
+        Create a new folder to store checkpoints under current configuration
+        :param makedir: If 'False', this function only return the path, but not create the folder whether it existed or not
+        :return: a path to the checkpoint folder
+        '''
+        _ckpt_name = self.ckpt_name
+        try:
+            list = os.listdir(self.ckpt_root_dir)
+            list = [s[len(_ckpt_name):] for s in list if s.startswith(_ckpt_name)]
+            num = int(max(list)) + 1
+        except:
+            num = 0
+        _ckpt_name += str(num)
+        path = os.path.join(self.ckpt_root_dir, _ckpt_name)
+        if makedir and not os.path.exists(path):
+            os.makedirs(path)
+        return path
+
+    def find_last(self):
+        """Find the lasted trained model under current configuration"""
+        ckpt_dir = self._get_last_ckpt_folder(create_if_none=False)
+        ckpt = tf.train.get_checkpoint_state(ckpt_dir)
+        if ckpt and ckpt.model_checkpoint_path:
+            return ckpt.model_checkpoint_path
+        else:
+            print('[!]Failed to find the last checkpoints files in %s' % ckpt_dir)
+            return None
 
     def load_weights(self, model_path):
         def get_global_step_init_value(model_dir):
@@ -98,32 +111,47 @@ class resnet(object):
                 global_step_init_value = 0
             return global_step_init_value
 
-        self.global_step_init_value=get_global_step_init_value(model_path)
+        self.global_step_init_value = get_global_step_init_value(model_path)
         if os.path.isdir(model_path):  # saver write_version=tf.train.SaverDef.V2
-            pass
-        elif os.path.isfile(model_path):  # saver write_version=tf.train.SaverDef.V1
+            ckpt = tf.train.get_checkpoint_state(model_path)
+            saver = tf.train.Saver()
+            if ckpt and ckpt.model_checkpoint_path:
+                ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+                saver.restore(self.sess, os.path.join(model_path, ckpt_name))
+                print("[*]Loaded weights from {}".format(model_path))
+            else:
+                print("[!]Failed to load weights from {}".format(model_path))
+                raise RuntimeError
+            self.ckpt_dir=model_path
+        elif os.path.isfile(model_path):  #  Update saver write_version from tf.train.SaverDef.V1 into V2
+            self.ckpt_dir = self._create_new_ckpt_folder(makedir=True)
             pass
         else:
+            print('[!]No checkpoint files were found in '+model_path)
             raise FileNotFoundError
-        self.initialized=True
-
-    def find_last(self):
-        """Find the lasted trained model in current configuration"""
-        ckpt_dir = self._get_ckpt_dir(self.ckpt_root_dir, target='last')
-        ckpt = tf.train.get_checkpoint_state(ckpt_dir)
-        if ckpt and ckpt.model_checkpoint_path:
-            return ckpt.model_checkpoint_path
-        else:
-            print('Failed to find the last checkpoints files in %s' % ckpt_dir)
-            return None
-
-    def initialize_weights(self):
-        self.global_step_init_value=0
-        # ToDO: create new folder in ckpt dir
         self.initialized = True
 
-    def train(self,batch_xs,batch_ys,epochs=1):
-        assert self.initialized,'initialize_weights() or load_weights() must be called before call train()'
+    def initialize_weights(self):
+        self.global_step_init_value = 0
+        # create new folder in ckpt dir
+        self.ckpt_dir=self._create_new_ckpt_folder(makedir=True)
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        self.sess.run(init_op)
+        print('[*]Initialized all variables')
+        self.initialized = True
+
+    def _init_loss(self, predicts, labels):
+        loss_type = self.config.LOSS_TYPE.lower()
+        if loss_type is 'cross_entropy':
+            loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=predicts)
+        if self.config.USE_REGULARIZER:
+            reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
+            loss += layers.apply_regularization(reg, tf.trainable_variables())
+        return loss
+
+    def train(self, batch_xs, batch_ys, epochs=1):
+        assert self.mode is 'train', 'current mode is %s, not training mode' % self.mode
+        assert self.initialized, 'initialize_weights() or load_weights() must be called before call train()'
         logits = tf.squeeze(self.features, name='probability')
         prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
         # Summaries log confugrations
@@ -133,7 +161,8 @@ class resnet(object):
         loss_log = tf.summary.scalar('loss', loss_t)
         summaries = tf.summary.merge([mAP_log, loss_log])
         # global_steps
-        global_step=tf.get_variable('global_step',dtype=tf.int32,initializer=tf.constant_initializer(self.global_step_init_value),trainable=False)
+        global_step = tf.get_variable('global_step', dtype=tf.int32,
+                                      initializer=tf.constant_initializer(self.global_step_init_value), trainable=False)
         # variable averages operation
         variable_averages = tf.train.ExponentialMovingAverage(decay=0.99, num_updates=global_step)
         variable_averages_op = variable_averages.apply(tf.trainable_variables())
@@ -149,7 +178,7 @@ class resnet(object):
         train_step = optim.minimize(loss_t, global_step=global_step, name=self.config.OPTIMIZER)
         train_op = tf.group(train_step, variable_averages_op)
         # Init and Train
-        init_op = tf.group(global_step.initializer,learning_rate.initializer)
+        init_op = tf.group(global_step.initializer, learning_rate.initializer)
         self.sess.run(init_op)
 
     def save(self, save_path, version=2):
@@ -177,7 +206,7 @@ class regression_resnet(resnet):
         if loss_type is 'rmse':  # Root-Means-Squared-Error, 均方根误差，标准差
             loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predicts, labels))))
         elif loss_type is 'cross_entropy':
-            loss = super(predicts,labels)
+            loss = super(predicts, labels)
         elif loss_type is 'ordinal':
             # ToDO
             pass
@@ -185,6 +214,7 @@ class regression_resnet(resnet):
             reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
             loss += layers.apply_regularization(reg, tf.trainable_variables())
         return loss
+
     def train(self, batch_xs, batch_ys, epochs):
         assert self.mode is 'train'
         self.ckpt_dir = self._get_ckpt_dir(self.ckpt_root_dir, target='new', create=True)
