@@ -9,7 +9,8 @@ from datetime import datetime
 from time import time
 from tabulate import tabulate
 import logging
-from .config import Config
+from config import Config
+
 
 def processBar(num, total, msg='', length=50):
     rate = num / total
@@ -25,6 +26,7 @@ def processBar(num, total, msg='', length=50):
     sys.stdout.flush
     return r.replace('\r', ':')
 
+
 class resnet(object):
     def __init__(self, mode, config, checkpoints_root_dir):
         self.num_classes = config.NUM_CLASSES
@@ -35,14 +37,15 @@ class resnet(object):
         self.mode = mode
         self.config = config
         self.ckpt_root_dir = checkpoints_root_dir
-        self.ckpt_base_name == 'resnet{}_{}_{}_{}_'.format(
+        self.ckpt_base_name = 'resnet{}_{}_{}_{}_'.format(
             self.config.RESNET_DEPTH, self.config.RESNET_VERSION,
             self.config.LOSS_TYPE, self.config.OPTIMIZER)
         self.ckpt_dir = None
         self.sess = tf.InteractiveSession(config=config.SessionConfig)
-        self.resnet = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
-        self._batch_xs = tf.placeholder(tf.float32)
-        self.features, self.end_points = resnet(self._batch_xs, num_classes=self.num_classes)
+        self.net = self._get_resnet(config.RESNET_DEPTH, config.RESNET_VERSION)
+        input_shape = [config.BATCH_SIZE, config.IMG_SIZE[0], config.IMG_SIZE[1], config.IMG_CHANNEL]
+        self._batch_xs = tf.placeholder(tf.float32, shape=input_shape, name='batch_xs')
+        self.features, self.end_points = self.net(self._batch_xs, num_classes=self.num_classes)
         self.initialized = False
 
     def _get_resnet(self, resnet_depth, version):
@@ -69,7 +72,7 @@ class resnet(object):
         :param create_if_none: Create a new folder if there's no existed checkpoint folder
         :return: a path to the checkpoint folder
         """
-        _ckpt_name = self.ckpt_name
+        _ckpt_name = self.ckpt_base_name
         try:
             list = os.listdir(self.ckpt_root_dir)
             list = [s[len(_ckpt_name):] for s in list if s.startswith(_ckpt_name)]
@@ -88,7 +91,7 @@ class resnet(object):
         :param makedir: If 'False', this function only return the path, but not create the folder whether it existed or not
         :return: a path to the checkpoint folder
         '''
-        _ckpt_name = self.ckpt_name
+        _ckpt_name = self.ckpt_base_name
         try:
             list = os.listdir(self.ckpt_root_dir)
             list = [s[len(_ckpt_name):] for s in list if s.startswith(_ckpt_name)]
@@ -159,17 +162,27 @@ class resnet(object):
 
     def _init_loss(self, predicts, labels):
         loss_type = self.config.LOSS_TYPE.lower()
-        if loss_type is 'cross_entropy':
+        if loss_type == 'cross_entropy':
             loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=predicts)
-        return loss
+            return loss
+        print('[!]Unidentifiable loss type: ' + loss_type)
+        raise RuntimeError
 
-    def train(self, batch_xs, batch_ys, batch_count):
-        assert type(batch_count) is int and batch_count > 0
+    def train(self, batch_xs, batch_ys, iterations):
+        '''
+
+        :param batch_xs:
+        :param batch_ys: shape [batch_size, 1]
+        :param iterations: Iterations per epoch
+        :return:
+        '''
+        assert type(iterations) is int and iterations > 0
         assert self.mode is 'train', 'current mode is %s, not training mode' % self.mode
         assert self.initialized, 'initialize_weights() or load_weights() must be called before call train()'
         logits = tf.squeeze(self.features, name='probability')
         prediction = tf.argmax(logits, axis=-1, output_type=tf.int32, name='prediction')
         # Summaries log configurations
+        batch_ys = tf.reshape(batch_ys, [self.config.BATCH_SIZE, -1])
         loss_t = self._init_loss(logits, batch_ys)
         if self.config.USE_REGULARIZER:
             reg = layers.l2_regularizer(self.config.REGULARIZE_SCALE)
@@ -179,8 +192,9 @@ class resnet(object):
         loss_log = tf.summary.scalar('loss', loss_t)
         summary_t = tf.summary.merge([mAP_log, loss_log])
         # global_steps
-        global_step = tf.get_variable('global_step', dtype=tf.int32, trainable=False,
-                                      initializer=tf.constant_initializer(self.global_step_init_value))
+        # global_step = tf.get_variable('global_step', dtype=tf.int32, trainable=False,
+        #                               initializer=tf.constant_initializer)
+        global_step = tf.Variable(self.global_step_init_value, trainable=False)
         # variable averages operation
         variable_averages = tf.train.ExponentialMovingAverage(decay=0.99, num_updates=global_step)
         variable_averages_op = variable_averages.apply(tf.trainable_variables())
@@ -196,17 +210,20 @@ class resnet(object):
             raise NotImplementedError
         train_step = optim.minimize(loss_t, global_step=global_step, name=self.config.OPTIMIZER)
         train_op = tf.group(train_step, variable_averages_op)
+        # Init global step and learning rate
+        self.sess.run(global_step.initializer)
         # Train
         time_begin = datetime.now()
         suffix = str(int(time()))
         writer = tf.summary.FileWriter(self.ckpt_dir, self.sess.graph, filename_suffix=suffix)
         logging.basicConfig(filename=os.path.join(self.ckpt_dir, 'train.output-{}.txt'.format(suffix)),
                             level=logging.DEBUG)
-        loops = batch_count * self.config.TRAINING_EPOCH
+        loops = iterations * self.config.TRAINING_EPOCH
         for it in range(loops):
             try:
                 _, loss_val, sum_str, step_val, = self.sess.run(
-                    [train_op, loss_t, summary_t, global_step, ])  # main train step
+                    [train_op, loss_t, summary_t, global_step, ],
+                    feed_dict={self._batch_xs: batch_xs})  # main train step
                 if it % self.config.LOG_INTERVAL == 0:  # log summaries
                     step_val -= 1  # As 'global_step_t' already increased after 'sess.run(train_op)', here we decrease 'step_val' by one
                     writer.add_summary(sum_str, step_val)
@@ -235,8 +252,17 @@ class resnet(object):
         time_elapse = datetime.now() - time_begin
         print('Training finish, elapsed time %s' % time_elapse)
 
-    def save(self, save_path, version=2):
-        pass
+    def save(self, save_path, version=2, attach_global_step=False):
+        w_versions = [tf.train.SaverDef.V1, tf.train.SaverDef.V2]
+        saver = tf.train.Saver(write_version=w_versions[version - 1])
+        save_dir, model_name = os.path.split(save_path)
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        global_step_value = None
+        if attach_global_step:
+            global_step_value = tf.train.get_global_step()
+        save_path = saver.save(self.sess, save_path, global_step=global_step_value)
+        return save_path
 
 
 class regression_resnet(resnet):
