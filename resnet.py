@@ -16,7 +16,7 @@ gpu_test = '/gpu:0'
 
 flags = tf.app.flags
 ERROR_FLAG = 0
-CLASS_LIST = ['A', 'B', 'C', 'D', 'E','nodata']
+CLASS_LIST = ['A', 'B', 'C', 'D', 'E', 'nodata']
 CLASS_COUNT = len(CLASS_LIST)
 
 flags.DEFINE_integer('resnet_model', 101, 'The layers batch_count of resnet: 50, 101 or 152')
@@ -28,7 +28,8 @@ flags.DEFINE_string('save_dir', './checkpoints/models.separate_{}_{}_{}-',
 flags.DEFINE_string('model_name', 'ordinal_clouds.ckpt', 'model name')
 flags.DEFINE_string('optimizer', 'SGD', 'Either Adam or SGD')
 flags.DEFINE_string('loss_type', 'cross_entropy', 'Either ordinal or cross_entropy')
-flags.DEFINE_integer('batch_size', 256, 'How many big images in a batch, so the small images batch_count is 8 * batch_size')
+flags.DEFINE_integer('batch_size', 256,
+                     'How many big images in a batch, so the small images batch_count is 8 * batch_size')
 flags.DEFINE_integer('epoch', 1, 'Count of epoch, if zero, the dataset will be empty')
 flags.DEFINE_integer('loops', 500, 'Number of iterations, only works when loop_all is False. '
                                    'Note: it will be modified when the data batch_count is less')
@@ -181,7 +182,7 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
     assert epoch > 0
     resize = img_resize is not None and type(img_resize) in [list, np.ndarray] and len(img_resize) == 2
 
-    def _parse_function(file_path, label):
+    def _parse_function(file_path, label, org_name):
         '''Decode image
         :param file_path: shape[]
         :param label: shape[]
@@ -198,10 +199,11 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
             # x_img = tf.image.random_hue(x_img, max_delta=0.5)
             x_img = tf.image.random_flip_up_down(x_img)
             x_img = tf.image.random_flip_left_right(x_img)
-        return x_img, label
+        return x_img, label, org_name
 
     files = []
     labels = []
+    org_names = []
     cloudcover = [0.0, 0.1, 0.25, 0.75, 1.0]
     for i in range(len(class_list)):
         dir = os.path.join(input_dir, class_list[i])
@@ -209,8 +211,10 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
             print('path %s not exist' % dir)
             continue
         fs = os.listdir(dir)
+        org = [os.path.basename(f).split('_')[0] for f in fs]
         fs = [os.path.join(dir, item) for item in fs]
         files.extend(fs)
+        org_names.extend(org)
         if FLAGS.loss_type == 'ordinal':
             labels.extend([cloudcover[i]] * len(fs))
         else:
@@ -222,11 +226,14 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         idx = list(range(count))
         random.shuffle(idx)
         sfl_files = []
+        sfl_orgs = []
         sfl_labels = []
         for i in idx:
             sfl_files.append(files[i])
+            sfl_orgs.append(org_names[i])
             sfl_labels.append(labels[i])
         files = sfl_files
+        org_names = sfl_orgs
         labels = sfl_labels
     if count % batch_size > 0:
         count = count - count % batch_size
@@ -234,7 +241,8 @@ def init_img_reader(input_dir, batch_size, epoch, class_list, img_resize=None, c
         # labels = labels[:batch_count]
     # Initialize as a tensorflow tensor object
     data = tf.data.Dataset.from_tensor_slices((tf.constant(files, dtype=tf.string, name='file_path'),
-                                               tf.constant(labels, name='label')))
+                                               tf.constant(labels, name='label'),
+                                               tf.constant(org_names, name='org_name')))
     data = data.repeat(epoch)
     data = data.map(_parse_function)
     # if shuffle:
@@ -254,20 +262,39 @@ class Confusion(object):
         self.headers = headers
         self.class_count = len(headers)
         self.matrix = np.zeros((self.class_count, self.class_count), dtype=np.int64)
+        self.super_class = {}
         try:
             if predictions.shape == labels.shape and predictions.shape[0] > 0:
                 self.add_data(predictions, labels)
         except:
             pass
 
-    def add_data(self, predictions, labels):
+    def add_data(self, predictions, labels, super_classes=None):
         if predictions.shape == labels.shape and predictions.shape[0] > 0:
             for it in range(predictions.shape[0]):
                 self.matrix[predictions[it]][labels[it]] += 1
+                if super_classes != None:
+                    if self.super_class[super_classes[it]] is None:
+                        self.super_class[super_classes[it]] = []
+                self.super_class[super_classes[it]].append([predictions[it], labels[it], predictions[it] == labels[it]])
 
     def __str__(self):
         matrix = self.matrix.tolist()
-        return tabulate(matrix, headers=self.headers, tablefmt='grid')
+        msg = tabulate(matrix, headers=self.headers, tablefmt='grid')
+        if self.super_class != None:
+            super_acc = {}
+            for items in self.super_class:
+                right_count = 0
+                for item in self.super_class:
+                    if item[2]:
+                        right_count += 1
+                if super_acc.__contains__(right_count):
+                    super_acc[right_count] += 1
+                else:
+                    super_acc[right_count] = 1
+            accs = super_acc[max(super_acc.keys())] / sum(super_acc.values())
+            msg += "\nSuper accuracy is {}, distribution: {}".format(accs, super_acc)
+        return msg
 
 
 def init_loss(logits, labels, end_points, loss_type='ordinal'):
@@ -371,7 +398,7 @@ def train(sess, train_op, global_step_t, loss_t, summary_t, savedir, loops, logi
     return step_val
 
 
-def evaluate(sess, acc_t, probs_t, labels_t, summary_t, savedir, loops, logiter):
+def evaluate(sess, acc_t, probs_t, labels_t, org_names_t, summary_t, savedir, loops, logiter):
     accuracies = []
     suffix = str(int(time()))
     logpath = os.path.join(savedir, 'evaluate.output-{}.txt'.format(suffix))
@@ -382,10 +409,10 @@ def evaluate(sess, acc_t, probs_t, labels_t, summary_t, savedir, loops, logiter)
     sess.run(tf.local_variables_initializer())
     for it in range(loops):
         try:
-            accuracy, predictions, labels, sum_str = sess.run(
-                [acc_t, predict_t, labels_t, summary_t])
+            accuracy, predictions, labels, org_names, sum_str = sess.run(
+                [acc_t, predict_t, labels_t, org_names_t, summary_t])
             accuracies.append(accuracy)
-            cf.add_data(predictions, labels)
+            cf.add_data(predictions, labels, org_names)
             if it % logiter == 0:
                 msg = 'iteration: {}/{}  accuracy: {}\r\nconfusion matrix:\r\n{}'.format(it, loops, accuracy, cf)
                 print(msg)
@@ -409,7 +436,7 @@ def main(_):
     reader, data_count = init_img_reader(os.path.join(FLAGS.data_dir, 'train' if FLAGS.is_training else 'train')
                                          , FLAGS.batch_size, FLAGS.epoch, CLASS_LIST, img_resize=[32, 32], shuffle=True,
                                          adjust=FLAGS.random_adjust)
-    batch_xs, batch_ys = reader.make_one_shot_iterator().get_next()
+    batch_xs, batch_ys, batch_names = reader.make_one_shot_iterator().get_next()
     # param batch_xs: shape [batch_size, 32, 32, 3] type tf.float32
     # param batch_ys: shape [batch_size] type tf.int32
 
@@ -550,7 +577,8 @@ def main(_):
             e_savedir = os.path.join(savedir, 'evaluate')
             print('[*]Evaluate logs and summaries will be saved into %s' % os.path.abspath(e_savedir))
             os.makedirs(e_savedir, exist_ok=True)
-            accuracies = evaluate(sess, acc_t, probs, batch_ys, summary_t, e_savedir, loops=data_count, logiter=10)
+            accuracies = evaluate(sess, acc_t, probs, batch_ys, batch_names, summary_t, e_savedir, loops=data_count,
+                                  logiter=10)
             print('[*]The model accuracy is {}'.format(sum(accuracies) / len(accuracies)))
 
 

@@ -5,8 +5,10 @@
 # @File    : dataset.py
 # @Software: PyCharm
 
+import os
 import tensorflow as tf
 import numpy as np
+
 
 class Dataset(object):
     def __init__(self, data_dir, config):
@@ -23,7 +25,7 @@ class Dataset(object):
             x_img = tf.image.decode_jpeg(x_img_str, channels=config.IMG_CHANNEL)  # shape[?,?,channels]
             # if self.resize:
             x_img = tf.image.resize_images(x_img, size=config.IMG_SIZE,
-                                               method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
+                                           method=tf.image.ResizeMethod.BILINEAR)  # shape[img_resize,channels]
             # if adjust:  # 随机亮度、对比度与翻转
             #     x_img = tf.image.random_brightness(x_img, max_delta=0.25)
             #     x_img = tf.image.random_contrast(x_img, lower=0.75, upper=1.5)
@@ -57,11 +59,14 @@ class Dataset(object):
             idx = list(range(count))
             random.shuffle(idx)
             sfl_files = []
+            sfl_orgs = []
             sfl_labels = []
             for i in idx:
                 sfl_files.append(files[i])
+                sfl_orgs.append(org_names[i])
                 sfl_labels.append(labels[i])
             files = sfl_files
+            org_names = sfl_orgs
             labels = sfl_labels
         if count % config.BATCH_SIZE > 0:
             count = count - count % config.BATCH_SIZE
