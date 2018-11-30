@@ -273,8 +273,8 @@ class Confusion(object):
         if predictions.shape == labels.shape and predictions.shape[0] > 0:
             for it in range(predictions.shape[0]):
                 self.matrix[predictions[it]][labels[it]] += 1
-                if super_classes != None:
-                    if self.super_class[super_classes[it]] is None:
+                if super_classes is not None:
+                    if super_classes[it] not in self.super_class.keys():
                         self.super_class[super_classes[it]] = []
                 self.super_class[super_classes[it]].append([predictions[it], labels[it], predictions[it] == labels[it]])
 
@@ -283,9 +283,9 @@ class Confusion(object):
         msg = tabulate(matrix, headers=self.headers, tablefmt='grid')
         if self.super_class != None:
             super_acc = {}
-            for items in self.super_class:
+            for key in self.super_class:
                 right_count = 0
-                for item in self.super_class:
+                for item in self.super_class[key]:
                     if item[2]:
                         right_count += 1
                 if super_acc.__contains__(right_count):
@@ -293,7 +293,10 @@ class Confusion(object):
                 else:
                     super_acc[right_count] = 1
             accs = super_acc[max(super_acc.keys())] / sum(super_acc.values())
-            msg += "\nSuper accuracy is {}, distribution: {}".format(accs, super_acc)
+            sadl=[[i,super_acc[i]] for i in super_acc]
+            sadl.sort(reverse=True)
+            sadistr=tabulate(sadl,('correct sub-img','count'))
+            msg += "\nSuper accuracy is {}, distribution: \n{}".format(accs, sadistr)
         return msg
 
 
@@ -467,9 +470,8 @@ def main(_):
         ckpt = tf.train.get_checkpoint_state(model_dir)
         saver = tf.train.Saver()
         if ckpt and ckpt.model_checkpoint_path:
-            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-            saver.restore(sess, os.path.join(model_dir, ckpt_name))
-            print("-[*] Success to read {}".format(ckpt_name))
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print("-[*] Success to read {}".format(ckpt.model_checkpoint_path))
         else:
             print("-[*] No checkpoint files were found")
             return ERROR_FLAG
